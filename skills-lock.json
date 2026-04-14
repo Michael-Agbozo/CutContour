@@ -6,6 +6,11 @@
       "sourceType": "github",
       "computedHash": "22a560345e3808639575ebe9492efd89fc8ecb38a97b05f40562ad22f6b5c77e"
     },
+    "frontend-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "063a0e6448123cd359ad0044cc46b0e490cc7964d45ef4bb9fd842bd2ffbca67"
+    },
     "laravel-best-practices": {
       "source": "laravel/boost",
       "sourceType": "github",
