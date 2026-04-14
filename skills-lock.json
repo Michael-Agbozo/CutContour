@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "skills": {
+    "ai-sdk-development": {
+      "source": "laravel/ai",
+      "sourceType": "github",
+      "computedHash": "22a560345e3808639575ebe9492efd89fc8ecb38a97b05f40562ad22f6b5c77e"
+    },
+    "laravel-best-practices": {
+      "source": "laravel/boost",
+      "sourceType": "github",
+      "computedHash": "34991fb552d41fd9a8258be16775c286820aa33b2c84b12b2888dd7b20afd17a"
+    },
+    "livewire-development": {
+      "source": "laravel/boost",
+      "sourceType": "github",
+      "computedHash": "8f107c3d9edaa8e99563f7de7440272ff64586558514724a6ac1e15c8b93c91e"
+    },
+    "tailwindcss-development": {
+      "source": "laravel/boost",
+      "sourceType": "github",
+      "computedHash": "f1d29fcdfb77f72e8f25b157793c2d879e0d6a87199ea976dde60e05e3146799"
+    },
+    "test-skill": {
+      "source": "laravel/boost",
+      "sourceType": "github",
+      "computedHash": "edd18842575ddc2a30e57a15fbf782714f68057df925e07ceb5eee66e930ba96"
+    }
+  }
+}
