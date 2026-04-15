@@ -6,6 +6,11 @@
       "sourceType": "github",
       "computedHash": "22a560345e3808639575ebe9492efd89fc8ecb38a97b05f40562ad22f6b5c77e"
     },
+    "bencium-innovative-ux-designer": {
+      "source": "bencium/bencium-claude-code-design-skill",
+      "sourceType": "github",
+      "computedHash": "a535e501e9f72e0de2d43546104f98b596119f8bbea1df915579b26da08d792d"
+    },
     "frontend-design": {
       "source": "anthropics/skills",
       "sourceType": "github",
