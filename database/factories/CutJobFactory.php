@@ -20,6 +20,11 @@ class CutJobFactory extends Factory
         $userId = User::factory();
         $ext = fake()->randomElement(['jpg', 'png', 'svg', 'pdf', 'ai']);
         $originalName = fake()->slug(3).'.'.$ext;
+        $retentionDays = (int) rescue(
+            fn (): mixed => config('cutjob.retention_days', 90),
+            90,
+            report: false
+        );
 
         return [
             'user_id' => $userId,
@@ -34,7 +39,7 @@ class CutJobFactory extends Factory
             'confidence_score' => null,
             'processing_duration_ms' => null,
             'error_message' => null,
-            'expires_at' => now()->addDays(config('cutjob.retention_days', 90)),
+            'expires_at' => now()->addDays($retentionDays),
         ];
     }
 
