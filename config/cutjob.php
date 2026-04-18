@@ -69,6 +69,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Monthly Job Limit (Free Tier)
+    |--------------------------------------------------------------------------
+    |
+    | Maximum number of non-failed jobs a free-tier user may create per
+    | calendar month. Admins can reset a user's counter from the admin panel.
+    |
+    */
+    'monthly_job_limit' => (int) env('CUTJOB_MONTHLY_JOB_LIMIT', 10),
+
+    /*
+    |--------------------------------------------------------------------------
     | External Binary Paths
     |--------------------------------------------------------------------------
     |

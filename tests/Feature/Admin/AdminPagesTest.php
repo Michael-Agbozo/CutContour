@@ -261,3 +261,43 @@ test('logs page filters by level', function () {
 
     file_put_contents($logPath, $original);
 });
+
+/*
+|--------------------------------------------------------------------------
+| Users — reset usage
+|--------------------------------------------------------------------------
+*/
+
+test('admin can reset a free-tier users monthly usage', function () {
+    $admin = User::factory()->admin()->create();
+    $user = User::factory()->create(['is_admin' => false]);
+
+    expect($user->usage_reset_at)->toBeNull();
+
+    Livewire\Livewire::actingAs($admin)
+        ->test('pages::admin.users')
+        ->call('resetUsage', $user->id);
+
+    expect($user->fresh()->usage_reset_at)->not->toBeNull();
+});
+
+test('admin cannot reset usage for another admin', function () {
+    $admin = User::factory()->admin()->create();
+    $otherAdmin = User::factory()->admin()->create();
+
+    Livewire\Livewire::actingAs($admin)
+        ->test('pages::admin.users')
+        ->call('resetUsage', $otherAdmin->id);
+
+    expect($otherAdmin->fresh()->usage_reset_at)->toBeNull();
+});
+
+test('non-admin cannot call resetUsage action', function () {
+    $user = User::factory()->create(['is_admin' => false]);
+    $target = User::factory()->create(['is_admin' => false]);
+
+    Livewire\Livewire::actingAs($user)
+        ->test('pages::admin.users')
+        ->call('resetUsage', $target->id)
+        ->assertForbidden();
+});

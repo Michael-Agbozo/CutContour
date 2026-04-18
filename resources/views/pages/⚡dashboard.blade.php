@@ -51,14 +51,20 @@ new #[Title('Dashboard')] class extends Component {
     #[Computed]
     public function monthlyUsage(): array
     {
-        $used = auth()->user()
-            ->cutJobs()
+        /** @var \App\Models\User $user */
+        $user = auth()->user();
+
+        $query = $user->cutJobs()
             ->whereMonth('created_at', now()->month)
             ->whereYear('created_at', now()->year)
-            ->whereNot('status', 'failed')
-            ->count();
+            ->whereNot('status', 'failed');
 
-        $limit = 10; // Starter plan default
+        if ($user->usage_reset_at && $user->usage_reset_at->isCurrentMonth()) {
+            $query->where('created_at', '>=', $user->usage_reset_at);
+        }
+
+        $used = $query->count();
+        $limit = config('cutjob.monthly_job_limit', 10);
 
         return [
             'used' => $used,

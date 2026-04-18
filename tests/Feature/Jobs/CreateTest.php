@@ -51,8 +51,9 @@ test('generate shows safe error message for non-RuntimeException', function () {
     $user = User::factory()->create();
     $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
 
-    // Drop the cut_jobs table to cause a QueryException (not RuntimeException)
-    Schema::drop('cut_jobs');
+    // Drop a column needed by CutJob::create to cause a QueryException
+    // (usage count query still works since it doesn't use this column)
+    Schema::table('cut_jobs', fn ($t) => $t->dropColumn('original_name'));
 
     $component = Livewire::actingAs($user)
         ->test('pages::jobs.create')
@@ -63,8 +64,8 @@ test('generate shows safe error message for non-RuntimeException', function () {
         ->call('generate');
 
     $component->assertSet('state', 'failed');
-    // Should NOT expose internal exception details like table names or SQL
-    expect($component->get('errorMessage'))->not->toContain('cut_jobs')
+    // Should NOT expose internal exception details like column names or SQL
+    expect($component->get('errorMessage'))->not->toContain('original_name')
         ->and($component->get('errorMessage'))->toBe('Something went wrong while setting up your job. Please try again.');
 });
 
@@ -89,6 +90,51 @@ test('file upload accepts files within max size', function () {
     Livewire::actingAs($user)
         ->test('pages::jobs.create')
         ->set('file', $file)
+        ->assertHasNoErrors(['file']);
+});
+
+test('generate rejects when monthly usage limit is reached', function () {
+    config(['cutjob.monthly_job_limit' => 2]);
+
+    $user = User::factory()->create();
+
+    // Create 2 completed jobs this month (at limit)
+    CutJob::factory()->for($user)->completed()->count(2)->create();
+
+    $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
+
+    Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('file', $file)
+        ->set('targetWidth', 5.0)
+        ->set('targetHeight', 5.0)
+        ->set('offsetValue', 0.125)
+        ->call('generate')
+        ->assertHasErrors(['file']);
+});
+
+test('generate allows jobs after admin resets usage', function () {
+    config(['cutjob.monthly_job_limit' => 2]);
+
+    $user = User::factory()->create();
+
+    // Create 2 completed jobs before reset (at limit)
+    CutJob::factory()->for($user)->completed()->count(2)->create([
+        'created_at' => now()->subHours(2),
+    ]);
+
+    // Admin resets usage
+    $user->update(['usage_reset_at' => now()->subHour()]);
+
+    $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
+
+    Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('file', $file)
+        ->set('targetWidth', 5.0)
+        ->set('targetHeight', 5.0)
+        ->set('offsetValue', 0.125)
+        ->call('generate')
         ->assertHasNoErrors(['file']);
 });
 

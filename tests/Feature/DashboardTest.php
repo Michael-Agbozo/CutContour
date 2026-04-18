@@ -30,3 +30,27 @@ test('monthly usage excludes failed jobs', function () {
 
     expect($usage['used'])->toBe(2);
 });
+
+test('monthly usage respects usage_reset_at', function () {
+    $user = User::factory()->create();
+
+    // Create 3 completed jobs before the reset
+    CutJob::factory()->for($user)->completed()->count(3)->create([
+        'created_at' => now()->subHours(2),
+    ]);
+
+    // Reset usage 1 hour ago
+    $user->update(['usage_reset_at' => now()->subHour()]);
+
+    // Create 1 completed job after the reset
+    CutJob::factory()->for($user)->completed()->create([
+        'created_at' => now(),
+    ]);
+
+    $component = Livewire::actingAs($user)->test('pages::dashboard');
+
+    $usage = $component->instance()->monthlyUsage();
+
+    expect($usage['used'])->toBe(1)
+        ->and($usage['limit'])->toBe(config('cutjob.monthly_job_limit', 10));
+});
