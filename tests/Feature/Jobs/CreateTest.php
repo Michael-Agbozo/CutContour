@@ -15,6 +15,36 @@ test('authenticated verified users can access job creation page', function () {
         ->assertOk();
 });
 
+test('generate rejects job name longer than 255 characters', function () {
+    $user = User::factory()->create();
+    $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
+
+    Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('file', $file)
+        ->set('jobName', str_repeat('a', 256))
+        ->set('targetWidth', 5.0)
+        ->set('targetHeight', 5.0)
+        ->set('offsetValue', 0.125)
+        ->call('generate')
+        ->assertHasErrors(['jobName' => 'max']);
+});
+
+test('generate accepts job name of 255 characters', function () {
+    $user = User::factory()->create();
+    $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
+
+    Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('file', $file)
+        ->set('jobName', str_repeat('a', 255))
+        ->set('targetWidth', 5.0)
+        ->set('targetHeight', 5.0)
+        ->set('offsetValue', 0.125)
+        ->call('generate')
+        ->assertHasNoErrors(['jobName']);
+});
+
 test('generate shows safe error message for non-RuntimeException', function () {
     $user = User::factory()->create();
     $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
@@ -58,4 +88,35 @@ test('file upload accepts files within max size', function () {
         ->test('pages::jobs.create')
         ->set('file', $file)
         ->assertHasNoErrors(['file']);
+});
+test('generate rejects dimensions exceeding max pixels', function () {
+    $user = User::factory()->create();
+    $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
+
+    // 50 inches * 96 dpi = 4800 px > 4096 max
+    Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('file', $file)
+        ->set('unit', 'in')
+        ->set('targetWidth', 50.0)
+        ->set('targetHeight', 5.0)
+        ->set('offsetValue', 0.125)
+        ->call('generate')
+        ->assertHasErrors(['targetWidth']);
+});
+
+test('generate accepts dimensions within max pixels', function () {
+    $user = User::factory()->create();
+    $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
+
+    // 42 inches * 96 dpi = 4032 px < 4096 max
+    Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('file', $file)
+        ->set('unit', 'in')
+        ->set('targetWidth', 42.0)
+        ->set('targetHeight', 42.0)
+        ->set('offsetValue', 0.125)
+        ->call('generate')
+        ->assertHasNoErrors(['targetWidth', 'targetHeight']);
 });
