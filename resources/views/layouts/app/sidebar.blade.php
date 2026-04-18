@@ -136,6 +136,15 @@
                         >
                             {{ __('System') }}
                         </flux:sidebar.item>
+
+                        <flux:sidebar.item
+                            icon="document-magnifying-glass"
+                            :href="route('admin.logs')"
+                            :current="request()->routeIs('admin.logs')"
+                            wire:navigate
+                        >
+                            {{ __('Error Logs') }}
+                        </flux:sidebar.item>
                     </flux:sidebar.group>
                 @endcan
             </flux:sidebar.nav>

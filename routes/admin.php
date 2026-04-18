@@ -12,4 +12,6 @@ Route::middleware(['auth', 'verified', 'admin'])->prefix('admin')->group(functio
     Route::livewire('users', 'pages::admin.users')->name('admin.users');
 
     Route::livewire('system', 'pages::admin.system')->name('admin.system');
+
+    Route::livewire('logs', 'pages::admin.logs')->name('admin.logs');
 });
