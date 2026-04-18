@@ -23,3 +23,9 @@ yarn-error.log
 /.zed
 /.agents
 /.claude
+/.qodo
+/.zencoder
+/.zenflow
+CLAUDE.md
+boost.json
+skills-lock.json
