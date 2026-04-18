@@ -39,8 +39,8 @@ class ProcessCutJob implements ShouldQueue
     /** Do not retry — pipeline failures are deterministic and a second attempt wastes time. */
     public int $tries = 1;
 
-    /** Exponential backoff between retries. */
-    public array $backoff = [5, 30];
+    /** Fail the job immediately without re-queuing. */
+    public int $maxExceptions = 1;
 
     public function __construct(
         public readonly CutJob $cutJob,
@@ -172,14 +172,16 @@ class ProcessCutJob implements ShouldQueue
                 'duration_ms' => $durationMs,
             ]);
 
-            // Only record the error; status stays 'processing' until all retries are exhausted.
-            // The failed() method sets status='failed' after the final attempt.
             $this->cutJob->forceFill([
+                'status' => 'failed',
                 'error_message' => $e->getMessage(),
                 'processing_duration_ms' => $durationMs,
             ])->saveQuietly();
 
-            throw $e;
+            $this->cutJob->user->notify(new CutJobNotification($this->cutJob, 'failed'));
+
+            // Do not rethrow — we handle failure ourselves to avoid "attempted too many times".
+            $this->fail($e);
         }
     }
 

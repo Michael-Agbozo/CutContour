@@ -254,12 +254,12 @@ test('job marks cut_job as failed when pipeline throws', function () {
     $vectorizer = Mockery::mock(VectorizationService::class);
     $pdf = Mockery::mock(PdfService::class);
 
-    expect(fn () => (new ProcessCutJob($job))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf))
-        ->toThrow(RuntimeException::class);
+    // handle() no longer throws — it calls $this->fail() internally
+    (new ProcessCutJob($job))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf);
 
     $job->refresh();
 
-    // Status stays 'processing' during retriable failures; only failed() sets it to 'failed'
-    expect($job->status)->toBe('processing')
+    // Job is marked as failed immediately in the catch block
+    expect($job->status)->toBe('failed')
         ->and($job->error_message)->toContain('ImageMagick not found');
 });
