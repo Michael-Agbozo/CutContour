@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\CutJob;
+use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
@@ -66,6 +67,8 @@ new #[Title('All Jobs — Admin')] class extends Component {
 
     public function deleteJob(string $id): void
     {
+        Gate::authorize('manage-system');
+
         $job = CutJob::find($id);
 
         if ($job) {
