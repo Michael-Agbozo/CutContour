@@ -129,6 +129,7 @@ new #[Title('New Job')] class extends Component {
                 'required',
                 'file',
                 'mimes:jpg,jpeg,png,svg,pdf,ai',
+                'max:' . (config('cutjob.max_file_size_mb', 100) * 1024),
             ],
         ]);
 
@@ -138,17 +139,31 @@ new #[Title('New Job')] class extends Component {
     public function generate(): void
     {
         $this->validate([
-            'file'        => ['required', 'file', 'mimes:jpg,jpeg,png,svg,pdf,ai'],
+            'file'        => ['required', 'file', 'mimes:jpg,jpeg,png,svg,pdf,ai', 'max:' . (config('cutjob.max_file_size_mb', 100) * 1024)],
+            'jobName'     => ['nullable', 'string', 'max:255'],
             'targetWidth' => ['required', 'numeric', 'gt:0'],
             'targetHeight' => ['required', 'numeric', 'gt:0'],
             'offsetValue' => ['required', 'numeric', 'gte:0'],
         ], [
+            'jobName.max'           => 'Job name must not exceed 255 characters.',
             'targetWidth.required'  => 'Width is required before generating.',
             'targetWidth.gt'        => 'Width must be greater than 0.',
             'targetHeight.required' => 'Height is required before generating.',
             'targetHeight.gt'       => 'Height must be greater than 0.',
             'offsetValue.gte'       => 'Offset must be 0 or greater.',
         ]);
+
+        $maxPx = 4096;
+        if ($this->unitToPx($this->targetWidth) > $maxPx) {
+            $this->addError('targetWidth', "Width exceeds the maximum of {$maxPx} px.");
+
+            return;
+        }
+        if ($this->unitToPx($this->targetHeight) > $maxPx) {
+            $this->addError('targetHeight', "Height exceeds the maximum of {$maxPx} px.");
+
+            return;
+        }
 
         $this->state = 'processing';
         $this->resetSteps();
@@ -186,8 +201,12 @@ new #[Title('New Job')] class extends Component {
 
             $this->currentJobId = $cutJob->id;
         } catch (Throwable $e) {
-            $this->errorMessage = $e->getMessage();
+            $this->errorMessage = get_class($e) === \RuntimeException::class
+                ? $e->getMessage()
+                : 'An error occurred during processing. Please try again.';
             $this->state = 'failed';
+
+            report($e);
         }
     }
 
@@ -198,7 +217,10 @@ new #[Title('New Job')] class extends Component {
             return;
         }
 
-        $cutJob = CutJob::find($this->currentJobId);
+        $cutJob = CutJob::select([
+            'id', 'status', 'width', 'height', 'output_path',
+            'processing_duration_ms', 'ai_used', 'error_message',
+        ])->find($this->currentJobId);
 
         if ($cutJob === null) {
             return;

@@ -69,7 +69,24 @@ class AIService
             return null;
         }
 
+        if (! $this->isValidSvgPathData($svgPathData)) {
+            Log::warning('AIService: invalid svg_path format from agent', [
+                'path_preview' => substr($svgPathData, 0, 100),
+            ]);
+
+            return null;
+        }
+
         return $this->writeSvg($svgPathData, $outputDir, $aiConfidence);
+    }
+
+    /**
+     * Validate that the string contains only valid SVG path data characters.
+     */
+    private function isValidSvgPathData(string $data): bool
+    {
+        // SVG path d attribute: commands (MLCSQTAZHVmlcsqtazhv), numbers, commas, spaces, dots, dashes, scientific notation
+        return (bool) preg_match('/^[MLCSQTAZHVmlcsqtazhv0-9\s,.\-eE+]+$/', $data);
     }
 
     /**
