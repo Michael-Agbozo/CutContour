@@ -172,8 +172,9 @@ class ProcessCutJob implements ShouldQueue
                 'duration_ms' => $durationMs,
             ]);
 
+            // Only record the error; status stays 'processing' until all retries are exhausted.
+            // The failed() method sets status='failed' after the final attempt.
             $this->cutJob->forceFill([
-                'status' => 'failed',
                 'error_message' => $e->getMessage(),
                 'processing_duration_ms' => $durationMs,
             ])->saveQuietly();
