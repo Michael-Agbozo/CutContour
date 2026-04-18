@@ -198,7 +198,10 @@ new #[Title('New Job')] class extends Component {
             return;
         }
 
-        $cutJob = CutJob::find($this->currentJobId);
+        $cutJob = CutJob::select([
+            'id', 'status', 'width', 'height', 'output_path',
+            'processing_duration_ms', 'ai_used', 'error_message',
+        ])->find($this->currentJobId);
 
         if ($cutJob === null) {
             return;
