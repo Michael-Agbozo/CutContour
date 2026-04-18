@@ -142,6 +142,25 @@ new #[Title('New Job')] class extends Component {
 
     public function generate(): void
     {
+        /** @var \App\Models\User $user */
+        $user = auth()->user();
+        $limit = config('cutjob.monthly_job_limit', 10);
+
+        $usageQuery = $user->cutJobs()
+            ->whereMonth('created_at', now()->month)
+            ->whereYear('created_at', now()->year)
+            ->whereNot('status', 'failed');
+
+        if ($user->usage_reset_at && $user->usage_reset_at->isCurrentMonth()) {
+            $usageQuery->where('created_at', '>=', $user->usage_reset_at);
+        }
+
+        if ($usageQuery->count() >= $limit) {
+            $this->addError('file', "You've reached your monthly limit of {$limit} jobs. Please upgrade or contact an admin.");
+
+            return;
+        }
+
         $this->validate([
             'file'        => ['required', 'file', 'mimes:jpg,jpeg,png,svg,pdf,ai', 'max:' . (config('cutjob.max_file_size_mb', 100) * 1024)],
             'jobName'     => ['nullable', 'string', 'max:255'],
@@ -178,8 +197,6 @@ new #[Title('New Job')] class extends Component {
         $this->resetSteps();
 
         try {
-            /** @var \App\Models\User $user */
-            $user = auth()->user();
             $ext = strtolower($this->file->getClientOriginalExtension());
 
             $cutJob = CutJob::create([
