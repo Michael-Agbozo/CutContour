@@ -186,8 +186,12 @@ new #[Title('New Job')] class extends Component {
 
             $this->currentJobId = $cutJob->id;
         } catch (Throwable $e) {
-            $this->errorMessage = $e->getMessage();
+            $this->errorMessage = get_class($e) === \RuntimeException::class
+                ? $e->getMessage()
+                : 'An error occurred during processing. Please try again.';
             $this->state = 'failed';
+
+            report($e);
         }
     }
 
