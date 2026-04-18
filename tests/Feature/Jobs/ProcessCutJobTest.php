@@ -236,7 +236,7 @@ test('job passes target dimensions to preprocess', function () {
         ->and($job->height)->toBe(576);
 });
 
-test('job marks cut_job as failed when pipeline throws', function () {
+test('job keeps processing status and stores error when pipeline throws', function () {
     $user = User::factory()->create();
     $job = CutJob::factory()->for($user)->create([
         'file_type' => 'png',
@@ -259,7 +259,7 @@ test('job marks cut_job as failed when pipeline throws', function () {
 
     $job->refresh();
 
-    // Job is marked as failed immediately in the catch block
-    expect($job->status)->toBe('failed')
+    // Status remains processing until retries are exhausted; failed() then marks failed
+    expect($job->status)->toBe('processing')
         ->and($job->error_message)->toContain('ImageMagick not found');
 });
