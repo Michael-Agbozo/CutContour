@@ -1,8 +1,10 @@
 <?php
 
+use App\Models\CutJob;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 
 test('guests are redirected to login from job creation page', function () {
@@ -120,4 +122,22 @@ test('generate accepts dimensions within max pixels', function () {
         ->set('offsetValue', 0.125)
         ->call('generate')
         ->assertHasNoErrors(['targetWidth', 'targetHeight']);
+});
+
+test('download streams the completed job PDF via Livewire', function () {
+    Storage::fake();
+
+    $user = User::factory()->create();
+    $job = CutJob::factory()->for($user)->completed()->create([
+        'output_path' => 'users/'.$user->id.'/jobs/test123/output.pdf',
+        'job_name' => 'my-poster',
+    ]);
+
+    Storage::put($job->output_path, 'fake-pdf-content');
+
+    Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('completedJobId', $job->id)
+        ->call('download')
+        ->assertFileDownloaded('my-poster.pdf');
 });

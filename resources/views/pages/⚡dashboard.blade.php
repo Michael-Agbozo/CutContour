@@ -55,6 +55,7 @@ new #[Title('Dashboard')] class extends Component {
             ->cutJobs()
             ->whereMonth('created_at', now()->month)
             ->whereYear('created_at', now()->year)
+            ->whereNot('status', 'failed')
             ->count();
 
         $limit = 10; // Starter plan default
