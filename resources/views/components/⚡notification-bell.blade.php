@@ -126,23 +126,23 @@ new class extends Component {
         x-transition:leave="transition ease-in duration-150"
         x-transition:leave-start="opacity-100"
         x-transition:leave-end="opacity-0"
-        class="fixed inset-0 z-[190] bg-black/40"
+        class="fixed inset-0 z-[190] bg-black/50 backdrop-blur-sm"
         @click="open = false"
         style="display: none;"
     ></div>
 
-    {{-- Dropdown panel — top dropdown on mobile, positioned above bell on desktop --}}
+    {{-- Dropdown panel — centered modal on mobile, positioned near bell on desktop --}}
     <div
         x-show="open"
         x-transition:enter="transition ease-out duration-200"
-        x-transition:enter-start="opacity-0 -translate-y-2"
-        x-transition:enter-end="opacity-100 translate-y-0"
+        x-transition:enter-start="opacity-0 scale-95"
+        x-transition:enter-end="opacity-100 scale-100"
         x-transition:leave="transition ease-in duration-150"
-        x-transition:leave-start="opacity-100 translate-y-0"
-        x-transition:leave-end="opacity-0 -translate-y-2"
+        x-transition:leave-start="opacity-100 scale-100"
+        x-transition:leave-end="opacity-0 scale-95"
         :style="mobile ? '' : `top: ${top}px; left: ${left}px; transform: translateY(calc(-100% - 8px));`"
         :class="mobile
-            ? 'fixed top-14 inset-x-0 z-[200] mx-3 rounded-xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900'
+            ? 'fixed inset-x-4 top-1/2 z-[200] -translate-y-1/2 rounded-2xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900'
             : 'fixed z-[200] w-80 origin-bottom-left rounded-xl border border-zinc-200 bg-white shadow-xl ring-1 ring-zinc-900/5 dark:border-zinc-700 dark:bg-zinc-900 dark:ring-white/5'"
         style="display: none;"
     >
@@ -166,7 +166,7 @@ new class extends Component {
         </div>
 
         {{-- Notification list --}}
-        <div class="overflow-y-auto" :class="mobile ? 'max-h-[55vh]' : 'max-h-72'">
+        <div class="overflow-y-auto" :class="mobile ? 'max-h-[50vh]' : 'max-h-72'">
             @forelse($this->notifications as $notification)
                 @php
                     $data     = $notification->data;
