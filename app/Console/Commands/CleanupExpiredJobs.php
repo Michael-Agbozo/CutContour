@@ -10,38 +10,35 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 #[Signature('cutjob:cleanup')]
-#[Description('Delete files for expired CutJobs and mark their records as expired (PRD §12).')]
+#[Description('Delete expired CutJobs and failed jobs past their retention window.')]
 class CleanupExpiredJobs extends Command
 {
     public function handle(): int
     {
-        $this->info('Starting expired job cleanup…');
+        $this->info('Starting job cleanup…');
 
         $deleted = 0;
         $failed = 0;
 
+        // Purge completed jobs past their retention window (expires_at)
         CutJob::query()
             ->where('expires_at', '<', now())
             ->whereNot('status', 'expired')
             ->chunkById(100, function ($jobs) use (&$deleted, &$failed): void {
                 foreach ($jobs as $job) {
-                    try {
-                        $this->purgeFiles($job);
+                    $this->purgeJob($job, $deleted, $failed);
+                }
+            });
 
-                        $job->update([
-                            'status' => 'expired',
-                            'file_path' => null,
-                            'output_path' => null,
-                        ]);
+        // Purge failed jobs older than the configured retention hours
+        $failedCutoff = now()->subHours(config('cutjob.failed_retention_hours', 3));
 
-                        $deleted++;
-                    } catch (\Throwable $e) {
-                        $failed++;
-                        Log::error('CleanupExpiredJobs: failed to purge job', [
-                            'job_id' => $job->id,
-                            'error' => $e->getMessage(),
-                        ]);
-                    }
+        CutJob::query()
+            ->where('status', 'failed')
+            ->where('created_at', '<', $failedCutoff)
+            ->chunkById(100, function ($jobs) use (&$deleted, &$failed): void {
+                foreach ($jobs as $job) {
+                    $this->purgeJob($job, $deleted, $failed);
                 }
             });
 
@@ -53,6 +50,27 @@ class CleanupExpiredJobs extends Command
         $this->info("Cleanup complete. Deleted: {$deleted}, Failed: {$failed}");
 
         return self::SUCCESS;
+    }
+
+    private function purgeJob(CutJob $job, int &$deleted, int &$failed): void
+    {
+        try {
+            $this->purgeFiles($job);
+
+            $job->update([
+                'status' => 'expired',
+                'file_path' => null,
+                'output_path' => null,
+            ]);
+
+            $deleted++;
+        } catch (\Throwable $e) {
+            $failed++;
+            Log::error('CleanupExpiredJobs: failed to purge job', [
+                'job_id' => $job->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function purgeFiles(CutJob $job): void

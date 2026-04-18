@@ -67,3 +67,35 @@ test('cleanup deletes the job directory from storage', function () {
 
     expect(Storage::exists($dir))->toBeFalse();
 });
+
+test('cleanup purges failed jobs older than retention hours', function () {
+    Storage::fake();
+
+    $user = User::factory()->create();
+    $oldFailed = CutJob::factory()->for($user)->failed()->create([
+        'created_at' => now()->subHours(4),
+    ]);
+
+    $this->artisan('cutjob:cleanup')->assertSuccessful();
+
+    $oldFailed->refresh();
+
+    expect($oldFailed->status)->toBe('expired')
+        ->and($oldFailed->file_path)->toBeNull()
+        ->and($oldFailed->output_path)->toBeNull();
+});
+
+test('cleanup does not purge recent failed jobs', function () {
+    Storage::fake();
+
+    $user = User::factory()->create();
+    $recentFailed = CutJob::factory()->for($user)->failed()->create([
+        'created_at' => now()->subHour(),
+    ]);
+
+    $this->artisan('cutjob:cleanup')->assertSuccessful();
+
+    $recentFailed->refresh();
+
+    expect($recentFailed->status)->toBe('failed');
+});
