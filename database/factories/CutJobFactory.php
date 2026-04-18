@@ -5,6 +5,7 @@ namespace Database\Factories;
 use App\Models\CutJob;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Str;
 
 /**
  * @extends Factory<CutJob>
@@ -19,11 +20,16 @@ class CutJobFactory extends Factory
         $userId = User::factory();
         $ext = fake()->randomElement(['jpg', 'png', 'svg', 'pdf', 'ai']);
         $originalName = fake()->slug(3).'.'.$ext;
+        $retentionDays = (int) rescue(
+            fn (): mixed => config('cutjob.retention_days', 90),
+            90,
+            report: false
+        );
 
         return [
             'user_id' => $userId,
             'original_name' => $originalName,
-            'file_path' => 'users/1/jobs/'.fake()->uuid().'/original.'.$ext,
+            'file_path' => 'users/1/jobs/'.Str::ulid().'/original.'.$ext,
             'output_path' => null,
             'file_type' => $ext,
             'width' => fake()->numberBetween(100, 5000),
@@ -33,7 +39,7 @@ class CutJobFactory extends Factory
             'confidence_score' => null,
             'processing_duration_ms' => null,
             'error_message' => null,
-            'expires_at' => now()->addDays(config('cutjob.retention_days', 90)),
+            'expires_at' => now()->addDays($retentionDays),
         ];
     }
 
