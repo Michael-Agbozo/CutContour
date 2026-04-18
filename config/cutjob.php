@@ -47,6 +47,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Max Target Dimensions
+    |--------------------------------------------------------------------------
+    |
+    | Maximum target dimension in centimetres. Both width and height are
+    | validated against this limit (converted from the user's selected unit).
+    |
+    */
+    'max_dimension_cm' => (float) env('CUTJOB_MAX_DIMENSION_CM', 300),
+
+    /*
+    |--------------------------------------------------------------------------
     | External Binary Paths
     |--------------------------------------------------------------------------
     |

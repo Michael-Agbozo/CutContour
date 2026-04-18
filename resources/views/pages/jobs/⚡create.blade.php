@@ -153,14 +153,18 @@ new #[Title('New Job')] class extends Component {
             'offsetValue.gte'       => 'Offset must be 0 or greater.',
         ]);
 
-        $maxPx = 4096;
+        $maxCm = config('cutjob.max_dimension_cm', 300);
+        $maxPx = (int) round($maxCm / 2.54 * 96);
+        $maxInUnit = $this->pxToUnit($maxPx);
+        $unitLabel = $this->unit;
+
         if ($this->unitToPx($this->targetWidth) > $maxPx) {
-            $this->addError('targetWidth', "Width exceeds the maximum of {$maxPx} px.");
+            $this->addError('targetWidth', "Width exceeds the maximum of {$maxInUnit} {$unitLabel}.");
 
             return;
         }
         if ($this->unitToPx($this->targetHeight) > $maxPx) {
-            $this->addError('targetHeight', "Height exceeds the maximum of {$maxPx} px.");
+            $this->addError('targetHeight', "Height exceeds the maximum of {$maxInUnit} {$unitLabel}.");
 
             return;
         }

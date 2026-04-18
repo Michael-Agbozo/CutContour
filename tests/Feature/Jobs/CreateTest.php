@@ -92,36 +92,54 @@ test('file upload accepts files within max size', function () {
         ->assertHasNoErrors(['file']);
 });
 
-test('generate rejects dimensions exceeding max pixels', function () {
+test('generate rejects dimensions exceeding max cm limit', function () {
     $user = User::factory()->create();
     $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
 
-    // 50 inches * 96 dpi = 4800 px > 4096 max
+    // 301 cm exceeds default 300 cm max
     Livewire::actingAs($user)
         ->test('pages::jobs.create')
         ->set('file', $file)
-        ->set('unit', 'in')
-        ->set('targetWidth', 50.0)
-        ->set('targetHeight', 5.0)
+        ->set('unit', 'cm')
+        ->set('targetWidth', 301.0)
+        ->set('targetHeight', 100.0)
         ->set('offsetValue', 0.125)
         ->call('generate')
         ->assertHasErrors(['targetWidth']);
 });
 
-test('generate accepts dimensions within max pixels', function () {
+test('generate accepts dimensions within max cm limit', function () {
     $user = User::factory()->create();
     $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
 
-    // 42 inches * 96 dpi = 4032 px < 4096 max
+    // 299 cm is within default 300 cm max
     Livewire::actingAs($user)
         ->test('pages::jobs.create')
         ->set('file', $file)
-        ->set('unit', 'in')
-        ->set('targetWidth', 42.0)
-        ->set('targetHeight', 42.0)
+        ->set('unit', 'cm')
+        ->set('targetWidth', 299.0)
+        ->set('targetHeight', 299.0)
         ->set('offsetValue', 0.125)
         ->call('generate')
         ->assertHasNoErrors(['targetWidth', 'targetHeight']);
+});
+
+test('generate shows max error in selected unit', function () {
+    $user = User::factory()->create();
+    $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
+
+    // 120 inches ≈ 304.8 cm which exceeds 300 cm max
+    $component = Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('file', $file)
+        ->set('unit', 'in')
+        ->set('targetWidth', 120.0)
+        ->set('targetHeight', 5.0)
+        ->set('offsetValue', 0.125)
+        ->call('generate');
+
+    $errors = $component->errors();
+    expect($errors->first('targetWidth'))->toContain('in');
 });
 
 test('download streams the completed job PDF via Livewire', function () {
