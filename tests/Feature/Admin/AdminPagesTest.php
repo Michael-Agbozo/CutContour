@@ -164,3 +164,30 @@ test('admin cannot toggle their own admin status', function () {
 
     expect($admin->fresh()->is_admin)->toBeTrue();
 });
+
+/*
+|--------------------------------------------------------------------------
+| Jobs — delete with authorization
+|--------------------------------------------------------------------------
+*/
+
+test('admin can delete a job via deleteJob action', function () {
+    $admin = User::factory()->admin()->create();
+    $job = CutJob::factory()->for($admin)->create();
+
+    Livewire\Livewire::actingAs($admin)
+        ->test('pages::admin.jobs')
+        ->call('deleteJob', $job->id);
+
+    expect(CutJob::find($job->id))->toBeNull();
+});
+
+test('non-admin cannot call deleteJob action', function () {
+    $user = User::factory()->create(['is_admin' => false]);
+    $job = CutJob::factory()->for($user)->create();
+
+    Livewire\Livewire::actingAs($user)
+        ->test('pages::admin.jobs')
+        ->call('deleteJob', $job->id)
+        ->assertForbidden();
+});

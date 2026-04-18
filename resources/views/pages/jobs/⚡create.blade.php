@@ -129,6 +129,7 @@ new #[Title('New Job')] class extends Component {
                 'required',
                 'file',
                 'mimes:jpg,jpeg,png,svg,pdf,ai',
+                'max:' . (config('cutjob.max_file_size_mb', 100) * 1024),
             ],
         ]);
 
@@ -138,7 +139,7 @@ new #[Title('New Job')] class extends Component {
     public function generate(): void
     {
         $this->validate([
-            'file'        => ['required', 'file', 'mimes:jpg,jpeg,png,svg,pdf,ai'],
+            'file'        => ['required', 'file', 'mimes:jpg,jpeg,png,svg,pdf,ai', 'max:' . (config('cutjob.max_file_size_mb', 100) * 1024)],
             'jobName'     => ['nullable', 'string', 'max:255'],
             'targetWidth' => ['required', 'numeric', 'gt:0'],
             'targetHeight' => ['required', 'numeric', 'gt:0'],
