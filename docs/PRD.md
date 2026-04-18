@@ -1,9 +1,9 @@
 # CutContour AI Generator — Product Requirements Document
 
-**Version:** 1.0  
+**Version:** 1.2  
 **Status:** Build Ready  
 **Author:** Michael Agbozo  
-**Date:** 2026-04-14
+**Date:** 2026-04-18
 
 ---
 
@@ -30,6 +30,10 @@
 19. [Success Criteria](#19-success-criteria)
 20. [Known Limitations](#20-known-limitations)
 21. [Future Roadmap](#21-future-roadmap)
+22. [Notifications & Download System](#22-notifications--download-system)
+23. [Admin Section](#23-admin-section)
+24. [Permission & Authorization System](#24-permission--authorization-system)
+25. [AI SDK Integration (Implemented)](#25-ai-sdk-integration-implemented)
 
 ---
 
@@ -89,10 +93,13 @@ Fully automated. No design tools. No manual steps. The user only uploads and dow
 
 | Capability | Notes |
 |---|---|
-| View processing logs | Per-job: duration, AI usage, failures |
+| Admin dashboard | Real-time stats: total jobs, AI usage rate, failure rate, avg processing time |
+| View all jobs | Search, filter by status/AI usage, sort, paginated (20/page) |
+| Inspect failed jobs | Full error_message, expandable details, retry or delete actions |
+| Manage users | Search, sort, toggle admin role, view 2FA status, job counts |
+| System health | Pipeline binary checks, queue status, storage cleanup, config display |
 | Monitor pipeline health | Error rate, memory spikes, slow jobs |
-| Trigger storage cleanup | Manual override of the daily cron |
-| Inspect failed jobs | Full error_message and stack context |
+| Role-based login redirect | Admins → `/admin`, users → `/dashboard` |
 
 ---
 
@@ -176,10 +183,15 @@ Used when the image is clean and edges are well-defined.
 1. Upload
 2. ImageMagick preprocessing
    - Normalize format (convert to PNG)
-   - Resize if oversized (preserve ratio)
+   - Cap at 10,000 × 10,000 px (preserve ratio)
+   - Resize to user-specified target dimensions (W × H) with centre-aligned
+     letterbox padding (white for opaque, transparent for alpha-channel images)
    - Remove ICC profile quirks
-3. Edge detection (ImageMagick Canny / threshold)
-4. Binary mask generation
+3. Subject mask generation (subject contour, not bounding box)
+   - PNG with alpha channel → extract alpha channel directly (pixel-perfect boundary)
+   - Opaque images (JPEG etc.) → Canny edge detection + morphological close +
+     multi-corner flood-fill to isolate subject; small dilation fills edge seam
+4. Contour offset → morphological dilation by user-specified offset (px)
 5. Potrace vectorization → SVG paths
 6. CutContour layer generation
 7. PDF assembly and export
@@ -230,6 +242,7 @@ Used when confidence is low, background is complex, or subject isolation is unce
 |---|---|
 | Format | PDF only |
 | Filename | `{original_name}_{width}x{height}.pdf` |
+| Dimensions | Width and height in the filename are the user-specified target dimensions (in pixels at 96 px/in); the artwork is scaled to fit and padded to these exact dimensions |
 
 ### PDF Layer Structure
 
@@ -273,36 +286,39 @@ Improve subject isolation on complex images before vectorization. AI does not ge
 
 ### Model
 
-`gpt-4.1-mini` via Laravel AI SDK (configurable in `config/ai.php`).
+`gemini-2.0-flash` via Laravel AI SDK Agent pattern (configurable via `#[Provider]` and `#[Model]` attributes on the agent class). Multi-provider support via `config/ai.php` — can use OpenAI, Anthropic, Gemini, or any supported provider.
 
 ### Request Structure
 
+The AI integration uses the Laravel AI SDK Agent pattern with structured output:
+
 ```php
-$response = AI::chat()->send([
-    'model' => 'gpt-4.1-mini',
-    'messages' => [
-        [
-            'role' => 'user',
-            'content' => [
-                [
-                    'type' => 'text',
-                    'text' => 'Extract the main subject from this image for die-cut path generation. Return a binary segmentation mask or a simplified SVG path outlining the subject boundary. Ignore background elements.',
-                ],
-                [
-                    'type' => 'image',
-                    'image' => $filePath,
-                ],
-            ],
-        ],
-    ],
-]);
+use App\Ai\Agents\SubjectIsolationAgent;
+use Prism\Prism\ValueObjects\Media\Image;
+
+$response = (new SubjectIsolationAgent)->prompt(
+    'Extract the main subject from this image for die-cut path generation.',
+    [Image::fromLocalPath($preprocessedPath)],
+);
+
+$svgPathData = $response['svg_path'];   // SVG path d attribute
+$confidence  = $response['confidence'];  // 0.0–1.0
 ```
 
-### Expected AI Output (in priority order)
+### Agent Architecture
 
-1. **Binary segmentation mask** (PNG) — preferred; passed directly to Potrace
-2. **Simplified SVG path** — normalized and used as the CutContour path
-3. **Boundary description** (text) — regenerate mask via ImageMagick using coordinates
+`SubjectIsolationAgent` implements `Agent` + `HasStructuredOutput`:
+- Returns structured JSON with `svg_path` (SVG path `d` attribute) and `confidence` (0–1)
+- Uses `#[Provider(Lab::Gemini)]` and `#[Model('gemini-2.0-flash')]` attributes
+- 45-second timeout
+- Provider failover supported: `provider: [Lab::Gemini, Lab::OpenAI]`
+
+### Expected AI Output
+
+Structured JSON with two fields:
+
+1. **`svg_path`** (string) — simplified SVG path `d` attribute outlining the subject boundary
+2. **`confidence`** (float, 0–1) — model's confidence in the isolation quality
 
 ### Fallback Behavior
 
@@ -321,14 +337,16 @@ $response = AI::chat()->send([
 
 | Layer | Choice |
 |---|---|
-| Framework | Laravel (monolith) |
-| PHP | 8.4+ |
+| Framework | Laravel 13 (monolith) |
+| PHP | 8.5 |
+| Frontend | Livewire 4 SFC + Flux UI (free) + Alpine.js + Tailwind CSS 4 |
 | Image processing | ImageMagick |
 | Vectorization | Potrace |
-| AI | Laravel AI SDK |
+| AI | Laravel AI SDK (`laravel/ai`) — Agent pattern with Gemini 2.0 Flash |
 | Storage | Local filesystem (VPS) |
 | Queue | Sync (MVP) — Redis + workers in v2 |
-| Auth | Laravel Fortify (email + password) |
+| Auth | Laravel Fortify (email + password + 2FA) |
+| Testing | Pest 4 |
 
 ### Request Lifecycle
 
@@ -375,7 +393,7 @@ Standard Laravel session-based auth (no API tokens in MVP).
 | Registration | Yes |
 | Password reset | Yes |
 | Email verification | Optional (configurable) |
-| 2FA | No (v2 roadmap) |
+| 2FA (TOTP) | Yes — via Fortify (QR code setup, recovery codes) |
 | Social login | No |
 
 ### Authorization
@@ -571,7 +589,8 @@ Memory-intensive operations (Potrace, ImageMagick) must be isolated. If memory l
 ### Environment Variables
 
 ```env
-AI_DEFAULT_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=          # Optional — for OpenAI provider
+GEMINI_API_KEY=          # Primary — for Gemini vision (free tier available)
 CUTJOB_RETENTION_DAYS=90
 CUTJOB_MAX_FILE_SIZE_MB=100
 CUTJOB_CONFIDENCE_THRESHOLD=0.65
@@ -620,3 +639,357 @@ The MVP is considered successful when all of the following hold:
 | Advanced AI segmentation | Low | SAM2 or similar for multi-subject isolation |
 | Cloud storage (S3) | Low | Replace local storage for durability |
 | Webhook notifications | Low | Notify on job completion |
+| ~~2FA~~ | ~~High~~ | ~~Implemented in v1.2~~ |
+| ~~Admin dashboard~~ | ~~High~~ | ~~Implemented in v1.2~~ |
+| ~~Permission system~~ | ~~High~~ | ~~Implemented in v1.2~~ |
+| ~~AI SDK Agent pattern~~ | ~~Medium~~ | ~~Implemented in v1.2~~ |
+
+---
+
+## 22. Notifications & Download System
+
+> **Added in v1.1** — implemented post-PRD alongside the initial build.
+
+### Overview
+
+Users receive real-time feedback when a job finishes (success or failure) without having to poll the dashboard. Completed jobs also trigger an email with a secure, time-limited download link.
+
+### In-App Notifications
+
+| Aspect | Detail |
+|---|---|
+| Storage | Laravel database notifications (`notifications` table) |
+| Channels | `database` + `mail` on success; `database` only on failure |
+| Persistence | Notifications are never deleted — full history is accessible |
+| Unread indicator | Bell icon in sidebar shows unread count badge (max display `9+`) |
+| Mark as read | Opening a notification decrements the unread count immediately |
+| Mark all as read | One-click action clears all unread notifications |
+| History page | `/notifications` — paginated 20 per page, full archive |
+| Count refresh | Bell polls every 60 seconds via `wire:poll` |
+
+### Notification Bell Component
+
+- Livewire SFC component (`notification-bell`) embedded in both the desktop sidebar and the mobile header.
+- Renders a dropdown showing the 8 most recent notifications on click.
+- Completed notifications open the download URL in a new tab when clicked.
+- Links to the full `/notifications` history page in the dropdown footer.
+
+### Email Notification
+
+Sent only for successful completions via Laravel Mail (queued).
+
+| Field | Value |
+|---|---|
+| Subject | `Your file is ready: {filename}` |
+| Body | File name, "processed successfully" message, download button |
+| Link expiry | 7 days |
+| Channel | `mail` (uses app's default mailer) |
+
+### Secure Download Links
+
+| Aspect | Detail |
+|---|---|
+| Mechanism | `URL::temporarySignedRoute()` — HMAC-signed, time-limited |
+| Route | `GET /jobs/{cutJob}/download` (named `jobs.download`) |
+| Expiry | 7 days from job completion |
+| Middleware | `['auth', 'signed']` — unauthenticated users redirect to login then back |
+| Authorization | `CutJobPolicy@download` — owner-only, completed jobs only |
+| Response | `Storage::download()` streamed response with descriptive filename (`{name}_{w}x{h}.pdf`) |
+
+---
+
+## 23. Admin Section
+
+> **Added in v1.2** — full admin panel with role-based access.
+
+### Overview
+
+Super admins have a dedicated section at `/admin/*` with full visibility into jobs, users, and system health. The admin sidebar is separated from the workspace sidebar — admins see only admin navigation, regular users see only workspace navigation.
+
+### Admin Pages
+
+| Page | Route | Purpose |
+|---|---|---|
+| Dashboard | `/admin` | Stats grid (total jobs, completed, failed, AI usage rate), pipeline metrics (avg processing time, queue depth), recent failures (responsive card + table layout) |
+| All Jobs | `/admin/jobs` | Search, status/AI filter, sortable columns, inline delete, paginated 20/page |
+| Failed Jobs | `/admin/failed-jobs` | Search, expandable error details, retry (re-dispatches `ProcessCutJob`), delete, paginated 20/page |
+| Users | `/admin/users` | Search, sortable, admin role toggle, 2FA status indicator, job count per user, paginated 20/page |
+| System | `/admin/system` | Pipeline binary health checks (ImageMagick, Potrace, Inkscape, GhostScript), queue status, storage cleanup trigger, configuration display |
+
+### Middleware
+
+All admin routes are protected by three middleware layers:
+
+```
+['auth', 'verified', 'admin']
+```
+
+| Middleware | Purpose |
+|---|---|
+| `auth` | Requires authenticated session |
+| `verified` | Requires email verification |
+| `admin` | `EnsureUserIsAdmin` — checks `$user->is_admin`, aborts 403 |
+
+### Login Redirect
+
+Custom `LoginResponse` (overrides Fortify's default):
+- Admin users → `route('admin.dashboard')`
+- Regular users → `route('dashboard')`
+
+### Implementation
+
+- All admin pages are Livewire SFC components (⚡ prefix)
+- Routes defined in `routes/admin.php` (required from `routes/web.php`)
+- `CutJobPolicy` has a `before()` method granting admins full access to all jobs
+
+---
+
+## 24. Permission & Authorization System
+
+> **Added in v1.2** — centralized permission enum with Gate registration.
+
+### Permission Enum
+
+`App\Permission` — a backed enum with 5 named abilities:
+
+| Permission | Slug | Check |
+|---|---|---|
+| `AccessAdmin` | `access-admin` | `$user->is_admin` |
+| `AccessWorkspace` | `access-workspace` | `!$user->is_admin` |
+| `ManageUsers` | `manage-users` | `$user->is_admin` |
+| `ManageSystem` | `manage-system` | `$user->is_admin` |
+| `ViewAllJobs` | `view-all-jobs` | `$user->is_admin` |
+
+### Gate Registration
+
+Gates are registered automatically in `AppServiceProvider::registerPolicies()`:
+
+```php
+foreach (Permission::cases() as $permission) {
+    Gate::define($permission->value, fn (User $user) => $permission->check($user));
+}
+```
+
+### Sidebar Scoping
+
+- Workspace nav (Dashboard, New Job, Recent Jobs): `@can('access-workspace')` — visible only to regular users
+- Admin nav (Dashboard, All Jobs, Failed Jobs, Users, System): `@can('access-admin')` — visible only to admins
+- Admins see **only** admin navigation; users see **only** workspace navigation
+
+### Users Table
+
+| Column | Type | Purpose |
+|---|---|---|
+| `is_admin` | `boolean` | Default `false` — determines role |
+| `two_factor_secret` | `text` | Fortify 2FA TOTP secret (nullable) |
+| `two_factor_recovery_codes` | `text` | Backup codes (nullable) |
+
+---
+
+## 25. AI SDK Integration (Implemented)
+
+> **Added in v1.2** — replaced raw HTTP calls with Laravel AI SDK Agent pattern.
+
+### Package
+
+`laravel/ai` v0.6.0 (official first-party Laravel AI package, wraps Prism PHP internally).
+
+### Architecture
+
+```
+ProcessCutJob
+    ↓ (confidence low)
+AIService::analyze()
+    ↓
+SubjectIsolationAgent::prompt()
+    ↓ (with image attachment via Prism\Prism\ValueObjects\Media\Image)
+Gemini 2.0 Flash (vision)
+    ↓ (structured JSON output)
+{ svg_path: "M ...", confidence: 0.92 }
+    ↓
+AIService writes SVG to disk
+    ↓
+ProcessCutJob continues with AI-generated mask
+```
+
+### Key Files
+
+| File | Purpose |
+|---|---|
+| `app/Ai/Agents/SubjectIsolationAgent.php` | Agent class — `HasStructuredOutput`, returns `svg_path` + `confidence` |
+| `app/Services/AIService.php` | Orchestrates agent call, handles fallback, writes SVG output |
+| `config/ai.php` | Provider configuration (published from `laravel/ai`) |
+
+### Provider Support
+
+Multiple AI providers can be configured simultaneously via `.env`:
+
+```env
+GEMINI_API_KEY=...    # Primary (free tier available)
+OPENAI_API_KEY=...    # Optional
+ANTHROPIC_API_KEY=... # Optional
+```
+
+Failover is supported via the `#[Provider]` attribute or per-prompt:
+
+```php
+$response = (new SubjectIsolationAgent)->prompt('...', provider: [Lab::Gemini, Lab::OpenAI]);
+```
+
+### Testing
+
+The agent supports `fake()` for testing without real API calls:
+
+```php
+SubjectIsolationAgent::fake([['svg_path' => 'M 0 0 L 100 0 Z', 'confidence' => 0.9]]);
+SubjectIsolationAgent::assertPrompted(fn ($prompt) => $prompt->contains('subject'));
+```
+
+---
+
+## 23. Admin Section
+
+> **Added in v1.2** — full admin panel with role-based access.
+
+### Overview
+
+Super admins have a dedicated section at `/admin/*` with full visibility into jobs, users, and system health. The admin sidebar is separated from the workspace sidebar — admins see only admin navigation, regular users see only workspace navigation.
+
+### Admin Pages
+
+| Page | Route | Purpose |
+|---|---|---|
+| Dashboard | `/admin` | Stats grid (total jobs, completed, failed, AI usage rate), pipeline metrics (avg processing time, queue depth), recent failures (responsive card + table layout) |
+| All Jobs | `/admin/jobs` | Search, status/AI filter, sortable columns, inline delete, paginated 20/page |
+| Failed Jobs | `/admin/failed-jobs` | Search, expandable error details, retry (re-dispatches `ProcessCutJob`), delete, paginated 20/page |
+| Users | `/admin/users` | Search, sortable, admin role toggle, 2FA status indicator, job count per user, paginated 20/page |
+| System | `/admin/system` | Pipeline binary health checks (ImageMagick, Potrace, Inkscape, GhostScript), queue status, storage cleanup trigger, configuration display |
+
+### Middleware
+
+All admin routes are protected by three middleware layers:
+
+```
+['auth', 'verified', 'admin']
+```
+
+| Middleware | Purpose |
+|---|---|
+| `auth` | Requires authenticated session |
+| `verified` | Requires email verification |
+| `admin` | `EnsureUserIsAdmin` — checks `$user->is_admin`, aborts 403 |
+
+### Login Redirect
+
+Custom `LoginResponse` (overrides Fortify's default):
+- Admin users → `route('admin.dashboard')`
+- Regular users → `route('dashboard')`
+
+### Implementation
+
+- All admin pages are Livewire SFC components (⚡ prefix)
+- Routes defined in `routes/admin.php` (required from `routes/web.php`)
+- `CutJobPolicy` has a `before()` method granting admins full access to all jobs
+
+---
+
+## 24. Permission & Authorization System
+
+> **Added in v1.2** — centralized permission enum with Gate registration.
+
+### Permission Enum
+
+`App\Permission` — a backed enum with 5 named abilities:
+
+| Permission | Slug | Check |
+|---|---|---|
+| `AccessAdmin` | `access-admin` | `$user->is_admin` |
+| `AccessWorkspace` | `access-workspace` | `!$user->is_admin` |
+| `ManageUsers` | `manage-users` | `$user->is_admin` |
+| `ManageSystem` | `manage-system` | `$user->is_admin` |
+| `ViewAllJobs` | `view-all-jobs` | `$user->is_admin` |
+
+### Gate Registration
+
+Gates are registered automatically in `AppServiceProvider::registerPolicies()`:
+
+```php
+foreach (Permission::cases() as $permission) {
+    Gate::define($permission->value, fn (User $user) => $permission->check($user));
+}
+```
+
+### Sidebar Scoping
+
+- Workspace nav (Dashboard, New Job, Recent Jobs): `@can('access-workspace')` — visible only to regular users
+- Admin nav (Dashboard, All Jobs, Failed Jobs, Users, System): `@can('access-admin')` — visible only to admins
+- Admins see **only** admin navigation; users see **only** workspace navigation
+
+### Users Table
+
+| Column | Type | Purpose |
+|---|---|---|
+| `is_admin` | `boolean` | Default `false` — determines role |
+| `two_factor_secret` | `text` | Fortify 2FA TOTP secret (nullable) |
+| `two_factor_recovery_codes` | `text` | Backup codes (nullable) |
+
+---
+
+## 25. AI SDK Integration (Implemented)
+
+> **Added in v1.2** — replaced raw HTTP calls with Laravel AI SDK Agent pattern.
+
+### Package
+
+`laravel/ai` v0.6.0 (official first-party Laravel AI package, wraps Prism PHP internally).
+
+### Architecture
+
+```
+ProcessCutJob
+    ↓ (confidence low)
+AIService::analyze()
+    ↓
+SubjectIsolationAgent::prompt()
+    ↓ (with image attachment via Prism\Prism\ValueObjects\Media\Image)
+Gemini 2.0 Flash (vision)
+    ↓ (structured JSON output)
+{ svg_path: "M ...", confidence: 0.92 }
+    ↓
+AIService writes SVG to disk
+    ↓
+ProcessCutJob continues with AI-generated mask
+```
+
+### Key Files
+
+| File | Purpose |
+|---|---|
+| `app/Ai/Agents/SubjectIsolationAgent.php` | Agent class — `HasStructuredOutput`, returns `svg_path` + `confidence` |
+| `app/Services/AIService.php` | Orchestrates agent call, handles fallback, writes SVG output |
+| `config/ai.php` | Provider configuration (published from `laravel/ai`) |
+
+### Provider Support
+
+Multiple AI providers can be configured simultaneously via `.env`:
+
+```env
+GEMINI_API_KEY=...    # Primary (free tier available)
+OPENAI_API_KEY=...    # Optional
+ANTHROPIC_API_KEY=... # Optional
+```
+
+Failover is supported via the `#[Provider]` attribute or per-prompt:
+
+```php
+$response = (new SubjectIsolationAgent)->prompt('...', provider: [Lab::Gemini, Lab::OpenAI]);
+```
+
+### Testing
+
+The agent supports `fake()` for testing without real API calls:
+
+```php
+SubjectIsolationAgent::fake([['svg_path' => 'M 0 0 L 100 0 Z', 'confidence' => 0.9]]);
+SubjectIsolationAgent::assertPrompted(fn ($prompt) => $prompt->contains('subject'));
+```
