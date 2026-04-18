@@ -89,6 +89,7 @@ test('file upload accepts files within max size', function () {
         ->set('file', $file)
         ->assertHasNoErrors(['file']);
 });
+
 test('generate rejects dimensions exceeding max pixels', function () {
     $user = User::factory()->create();
     $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
