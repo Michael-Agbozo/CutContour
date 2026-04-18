@@ -21,5 +21,9 @@ yarn-error.log
 /.nova
 /.vscode
 /.zed
-/.agents
-/.claude
+/.qodo
+/.zencoder
+/.zenflow
+CLAUDE.md
+boost.json
+skills-lock.json

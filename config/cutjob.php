@@ -34,4 +34,21 @@ return [
     */
     'confidence_threshold' => (float) env('CUTJOB_CONFIDENCE_THRESHOLD', 0.65),
 
+    /*
+    |--------------------------------------------------------------------------
+    | External Binary Paths
+    |--------------------------------------------------------------------------
+    |
+    | Absolute paths to the CLI tools used by the pipeline. Override these when
+    | the binaries are not on PHP's restricted exec() PATH (e.g. Herd on macOS).
+    |
+    */
+    'binaries' => [
+        'convert' => env('IMAGEMAGICK_BINARY', 'convert'),
+        'identify' => env('IMAGEMAGICK_IDENTIFY_BINARY', 'identify'),
+        'potrace' => env('POTRACE_BINARY', 'potrace'),
+        'inkscape' => env('INKSCAPE_BINARY', 'inkscape'),
+        'gs' => env('GHOSTSCRIPT_BINARY', 'gs'),
+    ],
+
 ];

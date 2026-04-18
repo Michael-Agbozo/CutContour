@@ -2,13 +2,14 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Http;
+use App\Ai\Agents\SubjectIsolationAgent;
 use Illuminate\Support\Facades\Log;
+use Prism\Prism\ValueObjects\Media\Image;
 use RuntimeException;
 use Throwable;
 
 /**
- * Calls the Laravel AI SDK (gpt-4.1-mini) for subject isolation on complex images.
+ * Calls the Laravel AI SDK (SubjectIsolationAgent) for subject isolation on complex images.
  *
  * The AI does NOT generate the final cut path — it improves the input to Potrace
  * by isolating the subject before vectorisation (PRD §9).
@@ -18,29 +19,19 @@ use Throwable;
  */
 class AIService
 {
-    private string $model;
-
-    public function __construct()
-    {
-        $this->model = config('ai.default_model', 'gpt-4.1-mini');
-    }
-
     /**
      * Analyse the image and return the best available output for mask generation.
      *
      * Priority (PRD §9):
-     *   1. Binary segmentation mask path (PNG file written to $outputDir)
-     *   2. SVG path string
-     *   3. null → caller falls back to Fast Path
+     *   1. SVG path string → written to file
+     *   2. null → caller falls back to Fast Path
      *
-     * @return array{type: 'mask'|'svg', path: string}|null
+     * @return array{type: 'svg', path: string, ai_confidence: float}|null
      */
     public function analyze(string $preprocessedPath, string $outputDir): ?array
     {
         try {
-            $response = $this->callApi($preprocessedPath);
-
-            return $this->parseResponse($response, $outputDir);
+            return $this->callAgent($preprocessedPath, $outputDir);
         } catch (Throwable $e) {
             Log::warning('AIService: analysis failed, falling back to Fast Path', [
                 'error' => $e->getMessage(),
@@ -52,88 +43,55 @@ class AIService
     }
 
     /**
+     * @return array{type: 'svg', path: string, ai_confidence: float}|null
+     *
      * @throws RuntimeException
      */
-    private function callApi(string $imagePath): string
+    private function callAgent(string $imagePath, string $outputDir): ?array
     {
-        $imageData = base64_encode((string) file_get_contents($imagePath));
-        $mimeType = mime_content_type($imagePath) ?: 'image/png';
-
-        // Laravel AI SDK — requires `laravel/ai` package (composer require laravel/ai)
-        // Using Http facade as the underlying transport to keep the service testable
-        // without the package installed in dev.
-        $apiKey = config('ai.api_key') ?? config('services.openai.api_key');
-
-        if (! $apiKey) {
-            throw new RuntimeException('AI API key not configured.');
+        $maxMb = (int) config('cutjob.max_file_size_mb', 100);
+        $maxBytes = $maxMb * 1024 * 1024;
+        if (filesize($imagePath) > $maxBytes) {
+            throw new RuntimeException("Image too large for AI analysis (max {$maxMb} MB).");
         }
 
-        $result = Http::withToken($apiKey)
-            ->timeout(45)
-            ->connectTimeout(10)
-            ->post('https://api.openai.com/v1/chat/completions', [
-                'model' => $this->model,
-                'max_tokens' => 1024,
-                'messages' => [
-                    [
-                        'role' => 'user',
-                        'content' => [
-                            [
-                                'type' => 'text',
-                                'text' => 'Extract the main subject from this image for die-cut path generation. Return a simplified SVG path element (just the <path> tag with d attribute) outlining the subject boundary. Ignore background elements. Return only the SVG path element, no other text.',
-                            ],
-                            [
-                                'type' => 'image_url',
-                                'image_url' => [
-                                    'url' => "data:{$mimeType};base64,{$imageData}",
-                                    'detail' => 'high',
-                                ],
-                            ],
-                        ],
-                    ],
-                ],
-            ]);
+        $response = (new SubjectIsolationAgent)->prompt(
+            'Extract the main subject from this image for die-cut path generation.',
+            [Image::fromLocalPath($imagePath)],
+        );
 
-        if (! $result->successful()) {
-            throw new RuntimeException('AI API returned error: '.$result->status());
-        }
+        $svgPathData = $response['svg_path'] ?? '';
+        $aiConfidence = (float) ($response['confidence'] ?? 0.0);
 
-        return (string) ($result->json('choices.0.message.content') ?? '');
-    }
-
-    /**
-     * Parse the AI response and write a usable artefact to disk.
-     *
-     * @return array{type: 'mask'|'svg', path: string}|null
-     */
-    private function parseResponse(string $content, string $outputDir): ?array
-    {
-        $content = trim($content);
-
-        if (empty($content)) {
-            Log::warning('AIService: empty response from model');
+        if (empty($svgPathData)) {
+            Log::warning('AIService: empty svg_path from agent');
 
             return null;
         }
 
-        // Check for SVG path element in the response
-        if (str_contains($content, '<path') && str_contains($content, 'd="')) {
-            $svgPath = $outputDir.'/ai_cutpath.svg';
-            $svg = '<?xml version="1.0" encoding="UTF-8"?>'
-                .'<svg xmlns="http://www.w3.org/2000/svg">'
-                .$content
-                .'</svg>';
-            file_put_contents($svgPath, $svg);
+        return $this->writeSvg($svgPathData, $outputDir, $aiConfidence);
+    }
 
-            Log::debug('AIService: extracted SVG path', ['path' => $svgPath]);
+    /**
+     * Write the AI-generated SVG path to disk.
+     *
+     * @return array{type: 'svg', path: string, ai_confidence: float}
+     */
+    private function writeSvg(string $pathData, string $outputDir, float $aiConfidence): array
+    {
+        $svgPath = $outputDir.'/ai_cutpath.svg';
+        $svg = '<?xml version="1.0" encoding="UTF-8"?>'
+            .'<svg xmlns="http://www.w3.org/2000/svg">'
+            .'<path d="'.htmlspecialchars($pathData, ENT_QUOTES | ENT_XML1).'" />'
+            .'</svg>';
 
-            return ['type' => 'svg', 'path' => $svgPath];
-        }
+        file_put_contents($svgPath, $svg);
 
-        Log::warning('AIService: unrecognised response format, falling back', [
-            'content_preview' => substr($content, 0, 200),
+        Log::debug('AIService: extracted SVG path via agent', [
+            'path' => $svgPath,
+            'ai_confidence' => $aiConfidence,
         ]);
 
-        return null;
+        return ['type' => 'svg', 'path' => $svgPath, 'ai_confidence' => $aiConfidence];
     }
 }

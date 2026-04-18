@@ -10,6 +10,11 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * A single file-processing job submitted by a user.
+ *
+ * Status lifecycle: pending → processing → completed | failed | expired.
+ */
 class CutJob extends Model
 {
     /** @use HasFactory<CutJobFactory> */
@@ -19,6 +24,7 @@ class CutJob extends Model
     protected $fillable = [
         'user_id',
         'original_name',
+        'job_name',
         'file_path',
         'output_path',
         'file_type',
@@ -47,6 +53,7 @@ class CutJob extends Model
         return $this->belongsTo(User::class);
     }
 
+    /** Whether the job's download window has elapsed. */
     public function isExpired(): Attribute
     {
         return Attribute::get(fn (): bool => $this->expires_at->isPast());
@@ -57,6 +64,7 @@ class CutJob extends Model
         $query->where('user_id', $user->id);
     }
 
+    /** All jobs that haven't been marked as expired (i.e. still visible to the user). */
     public function scopePending(Builder $query): void
     {
         $query->whereNotIn('status', ['expired']);

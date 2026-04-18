@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\CutJob;
+use App\Notifications\CutJobNotification;
 use App\Services\AIService;
 use App\Services\ConfidenceService;
 use App\Services\ImageProcessingService;
@@ -32,16 +33,21 @@ class ProcessCutJob implements ShouldQueue
 {
     use Queueable;
 
-    /** Abort the job if it runs longer than 90 seconds (PRD §17). */
-    public int $timeout = 90;
+    /** Abort the job if it runs longer than 5 minutes. */
+    public int $timeout = 300;
 
-    /** Retry once on transient failure. */
-    public int $tries = 2;
+    /** Do not retry — pipeline failures are deterministic and a second attempt wastes time. */
+    public int $tries = 1;
 
     /** Exponential backoff between retries. */
     public array $backoff = [5, 30];
 
-    public function __construct(public readonly CutJob $cutJob) {}
+    public function __construct(
+        public readonly CutJob $cutJob,
+        public int $targetWidthPx = 0,
+        public int $targetHeightPx = 0,
+        public int $offsetPx = 0,
+    ) {}
 
     public function handle(
         ImageProcessingService $imageProcessor,
@@ -65,7 +71,12 @@ class ProcessCutJob implements ShouldQueue
 
         try {
             // ── Step 1: Preprocess ────────────────────────────────────────────────
-            $preprocessed = $imageProcessor->preprocess($sourcePath, $workDir);
+            $preprocessed = $imageProcessor->preprocess(
+                $sourcePath,
+                $workDir,
+                $this->targetWidthPx > 0 ? $this->targetWidthPx : null,
+                $this->targetHeightPx > 0 ? $this->targetHeightPx : null,
+            );
 
             // Update dimensions now that we know them
             $this->cutJob->update([
@@ -108,11 +119,16 @@ class ProcessCutJob implements ShouldQueue
                 $maskPath = $imageProcessor->generateMask($preprocessed['path'], $workDir);
             }
 
+            // Apply contour offset dilation (outward expansion of subject boundary)
+            if ($this->offsetPx > 0) {
+                $maskPath = $imageProcessor->applyOffset($maskPath, $workDir, $this->offsetPx);
+            }
+
             // ── Step 5: Vectorise ─────────────────────────────────────────────────
             $svgPath = $vectorizer->vectorize($maskPath, $workDir);
 
             // ── Step 6: Assemble PDF ──────────────────────────────────────────────
-            $outputPath = $pdfService->assemble(
+            $absoluteOutputPath = $pdfService->assemble(
                 originalPath: $sourcePath,
                 svgPath: $svgPath,
                 outputDir: Storage::path("users/{$userId}/jobs/{$jobId}"),
@@ -121,9 +137,11 @@ class ProcessCutJob implements ShouldQueue
                 height: $preprocessed['height'],
             );
 
-            // Store path relative to the storage root
-            $relativeOutputPath = "users/{$userId}/jobs/{$jobId}/"
-                .$pdfService->buildFilename($this->cutJob->original_name, $preprocessed['width'], $preprocessed['height']);
+            // Derive the storage-relative path from the absolute path returned by assemble()
+            $relativeOutputPath = ltrim(
+                str_replace(Storage::path(''), '', $absoluteOutputPath),
+                '/\\',
+            );
 
             $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
 
@@ -143,6 +161,8 @@ class ProcessCutJob implements ShouldQueue
                 'output' => $relativeOutputPath,
             ]);
 
+            $this->cutJob->user->notify(new CutJobNotification($this->cutJob, 'completed'));
+
         } catch (Throwable $e) {
             $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
 
@@ -152,8 +172,9 @@ class ProcessCutJob implements ShouldQueue
                 'duration_ms' => $durationMs,
             ]);
 
-            $this->cutJob->update([
-                'status' => 'failed',
+            // Only record the error; status stays 'processing' until all retries are exhausted.
+            // The failed() method sets status='failed' after the final attempt.
+            $this->cutJob->updateQuietly([
                 'error_message' => $e->getMessage(),
                 'processing_duration_ms' => $durationMs,
             ]);
@@ -174,6 +195,8 @@ class ProcessCutJob implements ShouldQueue
             'status' => 'failed',
             'error_message' => $exception->getMessage(),
         ]);
+
+        $this->cutJob->user->notify(new CutJobNotification($this->cutJob, 'failed'));
     }
 
     /**
@@ -186,12 +209,21 @@ class ProcessCutJob implements ShouldQueue
         ImageProcessingService $imageProcessor,
     ): string {
         $rasterPath = $workDir.'/ai_mask_raster.png';
+        $output = [];
+        $code = 0;
+
+        $convert = config('cutjob.binaries.convert', 'convert');
 
         exec(sprintf(
-            'convert -background black -fill white -density 300 %s %s 2>&1',
+            '%s -background black -fill white -density 300 %s %s 2>&1',
+            escapeshellarg($convert),
             escapeshellarg($svgPath),
             escapeshellarg($rasterPath),
-        ));
+        ), $output, $code);
+
+        if ($code !== 0) {
+            throw new \RuntimeException('AI SVG rasterisation failed: '.implode(' ', $output));
+        }
 
         return $imageProcessor->normalizeMask($rasterPath, $workDir);
     }
