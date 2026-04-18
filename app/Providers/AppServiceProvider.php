@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\CutJob;
+use App\Permission;
 use App\Policies\CutJobPolicy;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
@@ -10,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
+use Laravel\Fortify\Contracts\LoginResponse;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -18,7 +20,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(
+            LoginResponse::class,
+            \App\Http\Responses\LoginResponse::class,
+        );
     }
 
     /**
@@ -33,6 +38,10 @@ class AppServiceProvider extends ServiceProvider
     protected function registerPolicies(): void
     {
         Gate::policy(CutJob::class, CutJobPolicy::class);
+
+        foreach (Permission::cases() as $permission) {
+            Gate::define($permission->value, fn ($user) => $permission->check($user));
+        }
     }
 
     /**
