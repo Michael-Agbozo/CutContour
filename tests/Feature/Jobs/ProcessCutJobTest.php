@@ -164,6 +164,78 @@ test('job falls back to fast path when AI returns null', function () {
         ->and($job->ai_used)->toBeFalse();
 });
 
+test('job applies offset dilation when offsetPx is set', function () {
+    $user = User::factory()->create();
+    $job = CutJob::factory()->for($user)->create([
+        'file_type' => 'png',
+        'original_name' => 'artwork.png',
+    ]);
+
+    Storage::put($job->file_path, 'fake-image-content');
+
+    [
+        'imageProcessor' => $imageProcessor,
+        'confidence' => $confidence,
+        'ai' => $ai,
+        'vectorizer' => $vectorizer,
+        'pdf' => $pdf,
+        'workDir' => $workDir,
+    ] = makeMockServices(width: 800, height: 600, score: 0.85, useAi: false);
+
+    $imageProcessor->shouldReceive('generateMask')->once()->andReturn($workDir.'/mask.png');
+    $imageProcessor->shouldReceive('applyOffset')
+        ->once()
+        ->with($workDir.'/mask.png', Mockery::any(), 12)
+        ->andReturn($workDir.'/mask_offset.png');
+    $ai->shouldNotReceive('analyze');
+
+    (new ProcessCutJob($job, 0, 0, 12))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf);
+
+    $job->refresh();
+
+    expect($job->status)->toBe('completed');
+});
+
+test('job passes target dimensions to preprocess', function () {
+    $user = User::factory()->create();
+    $job = CutJob::factory()->for($user)->create([
+        'file_type' => 'png',
+        'original_name' => 'artwork.png',
+    ]);
+
+    Storage::put($job->file_path, 'fake-image-content');
+
+    $workDir = sys_get_temp_dir().'/cutcontour-test-'.uniqid();
+
+    $imageProcessor = Mockery::mock(ImageProcessingService::class);
+    $imageProcessor->shouldReceive('preprocess')
+        ->once()
+        ->with(Mockery::any(), Mockery::any(), 384, 576)
+        ->andReturn(['path' => $workDir.'/preprocessed.png', 'width' => 384, 'height' => 576]);
+    $imageProcessor->shouldReceive('generateMask')->once()->andReturn($workDir.'/mask.png');
+
+    $confidence = Mockery::mock(ConfidenceService::class);
+    $confidence->shouldReceive('evaluate')->once()->andReturn(['score' => 0.90, 'useAi' => false]);
+
+    $ai = Mockery::mock(AIService::class);
+    $ai->shouldNotReceive('analyze');
+
+    $vectorizer = Mockery::mock(VectorizationService::class);
+    $vectorizer->shouldReceive('vectorize')->once()->andReturn($workDir.'/cutpath.svg');
+
+    $pdf = Mockery::mock(PdfService::class);
+    $pdf->shouldReceive('assemble')->once()->andReturn('/tmp/artwork_384x576.pdf');
+    $pdf->shouldReceive('buildFilename')->andReturn('artwork_384x576.pdf');
+
+    (new ProcessCutJob($job, 384, 576, 0))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf);
+
+    $job->refresh();
+
+    expect($job->status)->toBe('completed')
+        ->and($job->width)->toBe(384)
+        ->and($job->height)->toBe(576);
+});
+
 test('job marks cut_job as failed when pipeline throws', function () {
     $user = User::factory()->create();
     $job = CutJob::factory()->for($user)->create([
@@ -187,6 +259,7 @@ test('job marks cut_job as failed when pipeline throws', function () {
 
     $job->refresh();
 
-    expect($job->status)->toBe('failed')
+    // Status stays 'processing' during retriable failures; only failed() sets it to 'failed'
+    expect($job->status)->toBe('processing')
         ->and($job->error_message)->toContain('ImageMagick not found');
 });

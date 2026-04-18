@@ -10,6 +10,16 @@ use RuntimeException;
  */
 class VectorizationService
 {
+    private string $convert;
+
+    private string $potrace;
+
+    public function __construct()
+    {
+        $this->convert = config('cutjob.binaries.convert', 'convert');
+        $this->potrace = config('cutjob.binaries.potrace', 'potrace');
+    }
+
     /**
      * Vectorise a binary mask PNG into an SVG file using Potrace.
      *
@@ -20,16 +30,16 @@ class VectorizationService
         $svgPath = $outputDir.'/cutpath.svg';
         $bmpPath = $outputDir.'/mask.bmp';
 
-        // Potrace requires BMP input — convert from PNG
         $this->exec(sprintf(
-            'convert %s %s',
+            '%s %s %s',
+            escapeshellarg($this->convert),
             escapeshellarg($maskPath),
             escapeshellarg($bmpPath),
         ), 'BMP conversion failed');
 
-        // Run Potrace: output SVG with smooth curves, no fill, stroke only
         $this->exec(sprintf(
-            'potrace --svg --output %s --turdsize 2 --alphamax 1 --opttolerance 0.2 %s',
+            '%s --svg --output %s --turdsize 2 --alphamax 1 --opttolerance 0.2 %s',
+            escapeshellarg($this->potrace),
             escapeshellarg($svgPath),
             escapeshellarg($bmpPath),
         ), 'Potrace vectorization failed');
@@ -39,27 +49,6 @@ class VectorizationService
         }
 
         Log::debug('VectorizationService: vectorized', ['svg' => $svgPath]);
-
-        return $svgPath;
-    }
-
-    /**
-     * Normalise an AI-provided SVG path for use as the CutContour path.
-     * Strips fill, sets stroke, and ensures the path is clean.
-     */
-    public function normalizeSvgPath(string $svgPath): string
-    {
-        $svg = file_get_contents($svgPath);
-
-        if ($svg === false) {
-            throw new RuntimeException("Cannot read SVG file: {$svgPath}");
-        }
-
-        // Strip fills, ensure stroke is applied — the CutContour path must be stroke-only
-        $svg = preg_replace('/fill="[^"]*"/', 'fill="none"', $svg) ?? $svg;
-        $svg = preg_replace('/stroke="[^"]*"/', '', $svg) ?? $svg;
-
-        file_put_contents($svgPath, $svg);
 
         return $svgPath;
     }

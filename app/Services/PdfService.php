@@ -14,19 +14,24 @@ use RuntimeException;
  */
 class PdfService
 {
-    /** CutContour spot colour definition (PRD §8). */
-    private const SPOT_COLOR_NAME = 'CutContour';
+    private string $convert;
 
-    private const SPOT_C = 0;
+    private string $inkscape;
 
-    private const SPOT_M = 100;
+    private string $gs;
 
-    private const SPOT_Y = 0;
-
-    private const SPOT_K = 0;
+    public function __construct()
+    {
+        $this->convert = config('cutjob.binaries.convert', 'convert');
+        $this->inkscape = config('cutjob.binaries.inkscape', 'inkscape');
+        $this->gs = config('cutjob.binaries.gs', 'gs');
+    }
 
     /**
      * Assemble the final PDF from the original artwork and the SVG cut path.
+     *
+     * The cut path is kept fully vector (PRD §8): Inkscape converts the SVG to a
+     * vector PDF, then GhostScript merges it as a separate layer over the artwork.
      *
      * @throws RuntimeException
      */
@@ -41,39 +46,42 @@ class PdfService
         $outputFilename = $this->buildFilename($originalName, $width, $height);
         $outputPath = $outputDir.'/'.$outputFilename;
 
-        // Step 1: Rasterise the SVG cut path at high resolution
-        $cutPathPng = $outputDir.'/cutpath_raster.png';
+        // Step 1: Convert artwork to PDF if it is not one already
+        $artworkPdf = $outputDir.'/artwork.pdf';
+        if (strtolower(pathinfo($originalPath, PATHINFO_EXTENSION)) === 'pdf') {
+            $artworkPdf = $originalPath;
+        } else {
+            $this->exec(sprintf(
+                '%s %s -density 300 -compress LZW PDF:%s',
+                escapeshellarg($this->convert),
+                escapeshellarg($originalPath),
+                escapeshellarg($artworkPdf),
+            ), 'Artwork to PDF conversion failed');
+        }
+
+        // Step 2: Convert SVG cut path to a vector PDF — never rasterized (PRD §8)
+        $cutPathPdf = $outputDir.'/cutpath_vector.pdf';
         $this->exec(sprintf(
-            'convert -background none -density 300 %s %s',
+            '%s --export-type=pdf --export-filename=%s %s',
+            escapeshellarg($this->inkscape),
+            escapeshellarg($cutPathPdf),
             escapeshellarg($svgPath),
-            escapeshellarg($cutPathPng),
-        ), 'SVG rasterisation failed');
+        ), 'SVG to vector PDF failed (inkscape required)');
 
-        // Step 2: Composite artwork + cut path overlay into a single high-res image
-        $compositePng = $outputDir.'/composite.png';
+        // Step 3: Merge artwork + vector cut path using GhostScript
         $this->exec(sprintf(
-            'convert %s -colorspace sRGB %s -compose Over -composite %s',
-            escapeshellarg($originalPath),
-            escapeshellarg($cutPathPng),
-            escapeshellarg($compositePng),
-        ), 'Compositing failed');
-
-        // Step 3: Convert to PDF with spot colour annotation
-        // The spot colour name is embedded as an ICC spot channel note in the PDF metadata.
-        $this->exec(sprintf(
-            'convert %s -density 300 -compress None -quality 100 PDF:%s',
-            escapeshellarg($compositePng),
+            '%s -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile=%s %s %s',
+            escapeshellarg($this->gs),
             escapeshellarg($outputPath),
-        ), 'PDF export failed');
+            escapeshellarg($artworkPdf),
+            escapeshellarg($cutPathPdf),
+        ), 'PDF merge failed (gs required)');
 
         if (! file_exists($outputPath) || filesize($outputPath) === 0) {
             throw new RuntimeException('PDF assembly produced an empty file.');
         }
 
-        Log::debug('PdfService: assembled', [
-            'output' => $outputPath,
-            'spot_color' => self::SPOT_COLOR_NAME,
-        ]);
+        Log::debug('PdfService: assembled', ['output' => $outputPath]);
 
         return $outputPath;
     }
