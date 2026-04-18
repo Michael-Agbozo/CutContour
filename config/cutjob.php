@@ -15,6 +15,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Failed Job Retention
+    |--------------------------------------------------------------------------
+    |
+    | Number of hours to retain failed jobs before the cleanup command purges
+    | them. Failed jobs are cleaned up more aggressively than successful ones.
+    |
+    */
+    'failed_retention_hours' => (int) env('CUTJOB_FAILED_RETENTION_HOURS', 3),
+
+    /*
+    |--------------------------------------------------------------------------
     | Max Upload Size
     |--------------------------------------------------------------------------
     |
