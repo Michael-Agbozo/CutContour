@@ -5,6 +5,7 @@ namespace Database\Factories;
 use App\Models\CutJob;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Str;
 
 /**
  * @extends Factory<CutJob>
@@ -23,7 +24,7 @@ class CutJobFactory extends Factory
         return [
             'user_id' => $userId,
             'original_name' => $originalName,
-            'file_path' => 'users/1/jobs/'.fake()->uuid().'/original.'.$ext,
+            'file_path' => 'users/1/jobs/'.Str::ulid().'/original.'.$ext,
             'output_path' => null,
             'file_type' => $ext,
             'width' => fake()->numberBetween(100, 5000),
