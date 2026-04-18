@@ -36,8 +36,14 @@ new #[Title('Users — Admin')] class extends Component {
     #[Computed]
     public function users(): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
+        $limit = config('cutjob.monthly_job_limit', 10);
+
         return User::query()
-            ->withCount('cutJobs')
+            ->withCount(['cutJobs', 'cutJobs as monthly_usage_count' => function ($q) {
+                $q->whereMonth('created_at', now()->month)
+                    ->whereYear('created_at', now()->year)
+                    ->whereNot('status', 'failed');
+            }])
             ->when($this->search, fn ($q) => $q->where(function ($q) {
                 $q->where('name', 'like', "%{$this->search}%")
                     ->orWhere('email', 'like', "%{$this->search}%");
@@ -58,6 +64,19 @@ new #[Title('Users — Admin')] class extends Component {
 
         $user->update(['is_admin' => ! $user->is_admin]);
     }
+
+    public function resetUsage(int $userId): void
+    {
+        Gate::authorize('manage-users');
+
+        $user = User::find($userId);
+
+        if (! $user || $user->is_admin) {
+            return;
+        }
+
+        $user->update(['usage_reset_at' => now()]);
+    }
 };
 
 ?>
@@ -65,15 +84,7 @@ new #[Title('Users — Admin')] class extends Component {
 <div class="flex flex-col gap-6 p-6">
 
     {{-- Header --}}
-    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-            <h1 class="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Users</h1>
-            <p class="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">Manage user accounts and admin access.</p>
-        </div>
-        <flux:button variant="ghost" size="sm" :href="route('admin.dashboard')" wire:navigate icon="arrow-left">
-            Back to Dashboard
-        </flux:button>
-    </div>
+    <x-page-header title="Users" description="Manage user accounts and admin access." :back-route="route('admin.dashboard')" />
 
     {{-- Search --}}
     <div class="w-full sm:w-64">
@@ -95,6 +106,7 @@ new #[Title('Users — Admin')] class extends Component {
                         @endif
                     </th>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Jobs</th>
+                    <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Usage</th>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">2FA</th>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"></th>
                 </tr>
@@ -113,7 +125,7 @@ new #[Title('Users — Admin')] class extends Component {
                         </td>
                         <td class="px-4 py-3">
                             @if($user->is_admin)
-                                <span class="inline-flex rounded-full bg-cutcontour/10 px-2 py-0.5 text-[10px] font-semibold text-cutcontour">Admin</span>
+                                <x-status-badge status="admin" />
                             @else
                                 <span class="text-xs text-zinc-400 dark:text-zinc-500">User</span>
                             @endif
@@ -123,6 +135,24 @@ new #[Title('Users — Admin')] class extends Component {
                         </td>
                         <td class="px-4 py-3 text-xs text-zinc-700 dark:text-zinc-300">
                             {{ $user->cut_jobs_count }}
+                        </td>
+                        <td class="px-4 py-3">
+                            @if(! $user->is_admin)
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs {{ $user->monthly_usage_count >= config('cutjob.monthly_job_limit', 10) ? 'font-semibold text-red-600 dark:text-red-400' : 'text-zinc-700 dark:text-zinc-300' }}">
+                                        {{ $user->monthly_usage_count }}/{{ config('cutjob.monthly_job_limit', 10) }}
+                                    </span>
+                                    <flux:button
+                                        wire:click="resetUsage({{ $user->id }})"
+                                        wire:confirm="Reset monthly usage for {{ $user->name }}?"
+                                        variant="ghost"
+                                        size="sm"
+                                        icon="arrow-path"
+                                    />
+                                </div>
+                            @else
+                                <span class="text-[10px] text-zinc-400">Unlimited</span>
+                            @endif
                         </td>
                         <td class="px-4 py-3">
                             @if($user->two_factor_confirmed_at)
@@ -147,7 +177,7 @@ new #[Title('Users — Admin')] class extends Component {
                     </tr>
                 @empty
                     <tr>
-                        <td colspan="7" class="px-4 py-8 text-center text-xs text-zinc-400 dark:text-zinc-500">
+                        <td colspan="8" class="px-4 py-8 text-center text-xs text-zinc-400 dark:text-zinc-500">
                             No users found.
                         </td>
                     </tr>

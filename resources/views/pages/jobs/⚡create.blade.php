@@ -98,23 +98,27 @@ new #[Title('New Job')] class extends Component {
 
     private function pxToUnit(int $px): float
     {
+        $dpi = config('cutjob.dpi', 300);
+
         return (float) match ($this->unit) {
-            'cm' => round($px / 96 * 2.54, 2),
-            'mm' => round($px / 96 * 25.4, 1),
-            'pt' => round($px / 96 * 72, 1),
+            'cm' => round($px / $dpi * 2.54, 2),
+            'mm' => round($px / $dpi * 25.4, 1),
+            'pt' => round($px / $dpi * 72, 1),
             'px' => $px,
-            default => round($px / 96, 2), // in
+            default => round($px / $dpi, 2), // in
         };
     }
 
     private function unitToPx(float $value): int
     {
+        $dpi = config('cutjob.dpi', 300);
+
         return (int) round(match ($this->unit) {
-            'cm' => $value / 2.54 * 96,
-            'mm' => $value / 25.4 * 96,
-            'pt' => $value / 72 * 96,
+            'cm' => $value / 2.54 * $dpi,
+            'mm' => $value / 25.4 * $dpi,
+            'pt' => $value / 72 * $dpi,
             'px' => $value,
-            default => $value * 96, // in
+            default => $value * $dpi, // in
         });
     }
 
@@ -138,6 +142,25 @@ new #[Title('New Job')] class extends Component {
 
     public function generate(): void
     {
+        /** @var \App\Models\User $user */
+        $user = auth()->user();
+        $limit = config('cutjob.monthly_job_limit', 10);
+
+        $usageQuery = $user->cutJobs()
+            ->whereMonth('created_at', now()->month)
+            ->whereYear('created_at', now()->year)
+            ->whereNot('status', 'failed');
+
+        if ($user->usage_reset_at && $user->usage_reset_at->isCurrentMonth()) {
+            $usageQuery->where('created_at', '>=', $user->usage_reset_at);
+        }
+
+        if ($usageQuery->count() >= $limit) {
+            $this->addError('file', "You've reached your monthly limit of {$limit} jobs. Please upgrade or contact an admin.");
+
+            return;
+        }
+
         $this->validate([
             'file'        => ['required', 'file', 'mimes:jpg,jpeg,png,svg,pdf,ai', 'max:' . (config('cutjob.max_file_size_mb', 100) * 1024)],
             'jobName'     => ['nullable', 'string', 'max:255'],
@@ -153,14 +176,19 @@ new #[Title('New Job')] class extends Component {
             'offsetValue.gte'       => 'Offset must be 0 or greater.',
         ]);
 
-        $maxPx = 4096;
+        $maxCm = config('cutjob.max_dimension_cm', 300);
+        $dpi = config('cutjob.dpi', 300);
+        $maxPx = (int) round($maxCm / 2.54 * $dpi);
+        $maxInUnit = $this->pxToUnit($maxPx);
+        $unitLabel = $this->unit;
+
         if ($this->unitToPx($this->targetWidth) > $maxPx) {
-            $this->addError('targetWidth', "Width exceeds the maximum of {$maxPx} px.");
+            $this->addError('targetWidth', "Width exceeds the maximum of {$maxInUnit} {$unitLabel}.");
 
             return;
         }
         if ($this->unitToPx($this->targetHeight) > $maxPx) {
-            $this->addError('targetHeight', "Height exceeds the maximum of {$maxPx} px.");
+            $this->addError('targetHeight', "Height exceeds the maximum of {$maxInUnit} {$unitLabel}.");
 
             return;
         }
@@ -169,8 +197,6 @@ new #[Title('New Job')] class extends Component {
         $this->resetSteps();
 
         try {
-            /** @var \App\Models\User $user */
-            $user = auth()->user();
             $ext = strtolower($this->file->getClientOriginalExtension());
 
             $cutJob = CutJob::create([
@@ -178,6 +204,7 @@ new #[Title('New Job')] class extends Component {
                 'original_name' => $this->file->getClientOriginalName(),
                 'job_name'     => trim($this->jobName) ?: null,
                 'file_type'    => $ext,
+                'unit'         => $this->unit,
                 'status'       => 'processing',
                 'expires_at'   => now()->addDays(config('cutjob.retention_days', 90)),
             ]);
@@ -203,7 +230,7 @@ new #[Title('New Job')] class extends Component {
         } catch (Throwable $e) {
             $this->errorMessage = get_class($e) === \RuntimeException::class
                 ? $e->getMessage()
-                : 'An error occurred during processing. Please try again.';
+                : 'Something went wrong while setting up your job. Please try again.';
             $this->state = 'failed';
 
             report($e);
@@ -244,7 +271,7 @@ new #[Title('New Job')] class extends Component {
             $this->currentJobId = null;
             $this->state = 'completed';
         } elseif ($cutJob->status === 'failed') {
-            $this->errorMessage = $cutJob->error_message ?? 'Processing failed.';
+            $this->errorMessage = 'Processing failed. This may be due to file complexity. Try a simpler or higher-contrast version.';
             $this->currentJobId = null;
             $this->state = 'failed';
         }
@@ -264,16 +291,12 @@ new #[Title('New Job')] class extends Component {
 
         Gate::authorize('download', $cutJob);
 
-        $downloadName = $cutJob->job_name
-            ? rtrim($cutJob->job_name, '.pdf').'.pdf'
-            : 'untitled_'.$cutJob->width.'x'.$cutJob->height.'.pdf';
-
-        return Storage::download($cutJob->output_path, $downloadName);
+        return Storage::download($cutJob->output_path, $cutJob->downloadFilename());
     }
 
     /**
      * Convert px to the selected display unit.
-     * Screen-standard: 96 px per inch.
+     * Uses configured DPI (default 300 for print quality).
      */
     public function formatDimension(?int $px): string
     {
@@ -281,13 +304,15 @@ new #[Title('New Job')] class extends Component {
             return '—';
         }
 
+        $dpi = config('cutjob.dpi', 300);
+
         return match ($this->unit) {
-            'in' => number_format($px / 96, 2),
-            'cm' => number_format($px / 96 * 2.54, 2),
-            'mm' => number_format($px / 96 * 25.4, 1),
-            'pt' => number_format($px / 96 * 72, 1),
+            'in' => number_format($px / $dpi, 2),
+            'cm' => number_format($px / $dpi * 2.54, 2),
+            'mm' => number_format($px / $dpi * 25.4, 1),
+            'pt' => number_format($px / $dpi * 72, 1),
             'px' => (string) $px,
-            default => number_format($px / 96, 2),
+            default => number_format($px / $dpi, 2),
         };
     }
 
@@ -507,7 +532,7 @@ new #[Title('New Job')] class extends Component {
                 <div>
                     <h3 class="text-sm font-semibold text-red-900 dark:text-red-200">Processing failed</h3>
                     <p class="mt-1 text-xs leading-relaxed text-red-700 dark:text-red-400">
-                        {{ $errorMessage ?: 'Processing failed. This may be due to file complexity. Try a simpler or higher-contrast version.' }}
+                        {{ $errorMessage }}
                     </p>
                 </div>
                 <flux:button wire:click="removeFile" variant="primary" size="sm" icon="arrow-path">

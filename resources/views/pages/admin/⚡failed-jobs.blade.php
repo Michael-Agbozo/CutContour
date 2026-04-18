@@ -71,15 +71,7 @@ new #[Title('Failed Jobs — Admin')] class extends Component {
 <div class="flex flex-col gap-6 p-6">
 
     {{-- Header --}}
-    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-            <h1 class="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Failed Jobs</h1>
-            <p class="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">Inspect errors and retry failed processing jobs.</p>
-        </div>
-        <flux:button variant="ghost" size="sm" :href="route('admin.dashboard')" wire:navigate icon="arrow-left">
-            Back to Dashboard
-        </flux:button>
-    </div>
+    <x-page-header title="Failed Jobs" description="Inspect errors and retry failed processing jobs." :back-route="route('admin.dashboard')" />
 
     {{-- Search --}}
     <div class="w-full sm:w-64">
@@ -145,22 +137,7 @@ new #[Title('Failed Jobs — Admin')] class extends Component {
                                 <flux:button wire:click="retryJob('{{ $job->id }}')" variant="primary" size="sm" icon="arrow-path">
                                     Retry
                                 </flux:button>
-                                <div x-data="{ confirm: false }">
-                                    <flux:button x-show="!confirm" @click="confirm = true" variant="ghost" size="sm" icon="trash" class="text-red-500 hover:text-red-600">
-                                        Delete
-                                    </flux:button>
-                                    <div x-show="confirm" x-cloak class="flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-2 py-1 shadow-sm dark:border-red-900/40 dark:bg-zinc-900">
-                                        <span class="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">Sure?</span>
-                                        <button
-                                            @click="$wire.deleteJob('{{ $job->id }}'); confirm = false"
-                                            class="rounded px-1.5 py-0.5 text-[10px] font-semibold text-red-600 hover:bg-red-50 dark:text-red-400"
-                                        >Yes</button>
-                                        <button
-                                            @click="confirm = false"
-                                            class="rounded px-1.5 py-0.5 text-[10px] font-semibold text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                                        >No</button>
-                                    </div>
-                                </div>
+                                <x-confirm-action action="$wire.deleteJob('{{ $job->id }}')" label="Delete" />
                             </div>
                         </div>
                     </div>

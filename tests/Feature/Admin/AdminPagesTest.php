@@ -44,6 +44,7 @@ test('guests are redirected from admin pages', function (string $route) {
     'admin.failed-jobs',
     'admin.users',
     'admin.system',
+    'admin.logs',
 ]);
 
 test('non-admin users get 403 on admin pages', function (string $route) {
@@ -56,6 +57,7 @@ test('non-admin users get 403 on admin pages', function (string $route) {
     'admin.failed-jobs',
     'admin.users',
     'admin.system',
+    'admin.logs',
 ]);
 
 test('admin users can access admin pages', function (string $route) {
@@ -68,6 +70,7 @@ test('admin users can access admin pages', function (string $route) {
     'admin.failed-jobs',
     'admin.users',
     'admin.system',
+    'admin.logs',
 ]);
 
 /*
@@ -199,5 +202,102 @@ test('non-admin cannot call deleteJob action', function () {
     Livewire\Livewire::actingAs($user)
         ->test('pages::admin.jobs')
         ->call('deleteJob', $job->id)
+        ->assertForbidden();
+});
+
+/*
+|--------------------------------------------------------------------------
+| Logs — filtering and display
+|--------------------------------------------------------------------------
+*/
+
+test('logs page shows log entries excluding ProcessCutJob', function () {
+    $admin = User::factory()->admin()->create();
+
+    $logPath = storage_path('logs/laravel.log');
+    $original = file_exists($logPath) ? file_get_contents($logPath) : '';
+
+    // Write test log entries
+    file_put_contents($logPath, implode("\n", [
+        '[2026-04-18 10:00:00] production.ERROR: ProcessCutJob: failed {"job_id":"abc"}',
+        '[2026-04-18 10:01:00] production.ERROR: Something else went wrong {"context":"test"}',
+        '[2026-04-18 10:02:00] production.WARNING: Disk space low {"free":"1GB"}',
+    ])."\n");
+
+    $response = Livewire\Livewire::actingAs($admin)
+        ->test('pages::admin.logs');
+
+    $entries = $response->get('entries');
+
+    // ProcessCutJob entry should be filtered out
+    expect($entries)->toHaveCount(2)
+        ->and($entries[0]['message'])->toContain('Disk space low')
+        ->and($entries[1]['message'])->toContain('Something else went wrong');
+
+    // Restore original log
+    file_put_contents($logPath, $original);
+});
+
+test('logs page filters by level', function () {
+    $admin = User::factory()->admin()->create();
+
+    $logPath = storage_path('logs/laravel.log');
+    $original = file_exists($logPath) ? file_get_contents($logPath) : '';
+
+    file_put_contents($logPath, implode("\n", [
+        '[2026-04-18 10:00:00] production.ERROR: Test error message',
+        '[2026-04-18 10:01:00] production.WARNING: Test warning message',
+        '[2026-04-18 10:02:00] production.INFO: Test info message',
+    ])."\n");
+
+    $response = Livewire\Livewire::actingAs($admin)
+        ->test('pages::admin.logs')
+        ->set('level', 'error');
+
+    $entries = $response->get('entries');
+
+    expect($entries)->toHaveCount(1)
+        ->and($entries[0]['level'])->toBe('error');
+
+    file_put_contents($logPath, $original);
+});
+
+/*
+|--------------------------------------------------------------------------
+| Users — reset usage
+|--------------------------------------------------------------------------
+*/
+
+test('admin can reset a free-tier users monthly usage', function () {
+    $admin = User::factory()->admin()->create();
+    $user = User::factory()->create(['is_admin' => false]);
+
+    expect($user->usage_reset_at)->toBeNull();
+
+    Livewire\Livewire::actingAs($admin)
+        ->test('pages::admin.users')
+        ->call('resetUsage', $user->id);
+
+    expect($user->fresh()->usage_reset_at)->not->toBeNull();
+});
+
+test('admin cannot reset usage for another admin', function () {
+    $admin = User::factory()->admin()->create();
+    $otherAdmin = User::factory()->admin()->create();
+
+    Livewire\Livewire::actingAs($admin)
+        ->test('pages::admin.users')
+        ->call('resetUsage', $otherAdmin->id);
+
+    expect($otherAdmin->fresh()->usage_reset_at)->toBeNull();
+});
+
+test('non-admin cannot call resetUsage action', function () {
+    $user = User::factory()->create(['is_admin' => false]);
+    $target = User::factory()->create(['is_admin' => false]);
+
+    Livewire\Livewire::actingAs($user)
+        ->test('pages::admin.users')
+        ->call('resetUsage', $target->id)
         ->assertForbidden();
 });

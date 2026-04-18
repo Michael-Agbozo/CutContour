@@ -47,6 +47,39 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Max Target Dimensions
+    |--------------------------------------------------------------------------
+    |
+    | Maximum target dimension in centimetres. Both width and height are
+    | validated against this limit (converted from the user's selected unit).
+    |
+    */
+    'max_dimension_cm' => (float) env('CUTJOB_MAX_DIMENSION_CM', 300),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Output DPI (Resolution)
+    |--------------------------------------------------------------------------
+    |
+    | The DPI used for pixel ↔ physical-unit conversions and PDF output.
+    | 300 is standard for print-quality output.
+    |
+    */
+    'dpi' => (int) env('CUTJOB_DPI', 300),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Monthly Job Limit (Free Tier)
+    |--------------------------------------------------------------------------
+    |
+    | Maximum number of non-failed jobs a free-tier user may create per
+    | calendar month. Admins can reset a user's counter from the admin panel.
+    |
+    */
+    'monthly_job_limit' => (int) env('CUTJOB_MONTHLY_JOB_LIMIT', 10),
+
+    /*
+    |--------------------------------------------------------------------------
     | External Binary Paths
     |--------------------------------------------------------------------------
     |

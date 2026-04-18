@@ -15,9 +15,6 @@ class JobDownloadController extends Controller
 
         abort_unless($cutJob->status === 'completed' && $cutJob->output_path, 404);
 
-        $downloadName = pathinfo($cutJob->original_name, PATHINFO_FILENAME)
-            .'_'.$cutJob->width.'x'.$cutJob->height.'.pdf';
-
-        return Storage::download($cutJob->output_path, $downloadName);
+        return Storage::download($cutJob->output_path, $cutJob->downloadFilename());
     }
 }

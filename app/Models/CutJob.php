@@ -30,6 +30,7 @@ class CutJob extends Model
         'file_type',
         'width',
         'height',
+        'unit',
         'status',
         'expires_at',
     ];
@@ -64,5 +65,55 @@ class CutJob extends Model
     public function scopeVisible(Builder $query): void
     {
         $query->whereNotIn('status', ['expired']);
+    }
+
+    /**
+     * Build the download filename: {name}_{height}{unit}h_{width}{unit}w.pdf
+     *
+     * If no job name was set, generates Cut{N}-untitled where N is the count
+     * of unnamed jobs for this user.
+     */
+    public function downloadFilename(): string
+    {
+        $unit = $this->unit ?? 'in';
+        $w = $this->pxToUnit($this->width ?? 0, $unit);
+        $h = $this->pxToUnit($this->height ?? 0, $unit);
+
+        if ($this->job_name) {
+            $name = pathinfo($this->job_name, PATHINFO_FILENAME);
+        } else {
+            $position = static::where('user_id', $this->user_id)
+                ->whereNull('job_name')
+                ->where('id', '<=', $this->id)
+                ->count();
+            $name = "Cut{$position}-untitled";
+        }
+
+        return "{$name}_{$h}{$unit}h_{$w}{$unit}w.pdf";
+    }
+
+    /**
+     * Convert pixels to the given unit at the configured DPI.
+     */
+    public static function pxToUnit(int $px, string $unit): string
+    {
+        $dpi = config('cutjob.dpi', 300);
+
+        $value = match ($unit) {
+            'cm' => round($px / $dpi * 2.54, 2),
+            'mm' => round($px / $dpi * 25.4, 1),
+            'pt' => round($px / $dpi * 72, 1),
+            'px' => $px,
+            default => round($px / $dpi, 2), // in
+        };
+
+        // Remove unnecessary trailing decimal zeros: 100.00 → 100, 10.50 → 10.5
+        $formatted = (string) $value;
+
+        if (str_contains($formatted, '.')) {
+            $formatted = rtrim(rtrim($formatted, '0'), '.');
+        }
+
+        return $formatted;
     }
 }

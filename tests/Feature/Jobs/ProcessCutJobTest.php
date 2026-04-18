@@ -236,7 +236,7 @@ test('job passes target dimensions to preprocess', function () {
         ->and($job->height)->toBe(576);
 });
 
-test('job marks cut_job as failed when pipeline throws', function () {
+test('job keeps processing status and stores error when pipeline throws', function () {
     $user = User::factory()->create();
     $job = CutJob::factory()->for($user)->create([
         'file_type' => 'png',
@@ -254,12 +254,12 @@ test('job marks cut_job as failed when pipeline throws', function () {
     $vectorizer = Mockery::mock(VectorizationService::class);
     $pdf = Mockery::mock(PdfService::class);
 
-    expect(fn () => (new ProcessCutJob($job))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf))
-        ->toThrow(RuntimeException::class);
+    // handle() no longer throws — it calls $this->fail() internally
+    (new ProcessCutJob($job))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf);
 
     $job->refresh();
 
-    // Status stays 'processing' during retriable failures; only failed() sets it to 'failed'
+    // Status remains processing until retries are exhausted; failed() then marks failed
     expect($job->status)->toBe('processing')
         ->and($job->error_message)->toContain('ImageMagick not found');
 });

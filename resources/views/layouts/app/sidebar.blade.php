@@ -136,6 +136,15 @@
                         >
                             {{ __('System') }}
                         </flux:sidebar.item>
+
+                        <flux:sidebar.item
+                            icon="document-magnifying-glass"
+                            :href="route('admin.logs')"
+                            :current="request()->routeIs('admin.logs')"
+                            wire:navigate
+                        >
+                            {{ __('Error Logs') }}
+                        </flux:sidebar.item>
                     </flux:sidebar.group>
                 @endcan
             </flux:sidebar.nav>
@@ -218,12 +227,13 @@
             <flux:dropdown position="top" align="end">
                 <flux:profile
                     :initials="auth()->user()->initials()"
+                    :avatar="auth()->user()->avatarUrl()"
                     icon-trailing="chevron-down"
                 />
                 <flux:menu>
                     <flux:menu.radio.group>
                         <div class="flex items-center gap-2 px-1 py-1.5">
-                            <flux:avatar :name="auth()->user()->name" :initials="auth()->user()->initials()" />
+                            <flux:avatar :name="auth()->user()->name" :initials="auth()->user()->initials()" :src="auth()->user()->avatarUrl()" />
                             <div class="grid flex-1 text-start text-sm leading-tight">
                                 <flux:heading class="truncate">{{ auth()->user()->name }}</flux:heading>
                                 <flux:text class="truncate">{{ auth()->user()->email }}</flux:text>
