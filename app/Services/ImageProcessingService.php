@@ -11,7 +11,7 @@ use RuntimeException;
  */
 class ImageProcessingService
 {
-    private const MAX_DIMENSION = 4_096;
+    private const MAX_DIMENSION = 2_048;
 
     private string $convert;
 
@@ -45,11 +45,10 @@ class ImageProcessingService
         // Clamp during the initial convert so ImageMagick never decodes the full
         // raster at 300 DPI before capping — critical for large photos/WhatsApp images.
         $this->exec(sprintf(
-            '%s %s -auto-orient +profile "!exif,*" -colorspace sRGB -density 300 -resize %dx%d\> %s',
+            '%s %s -auto-orient +profile "!exif,*" -colorspace sRGB -density 300 -resize %s %s',
             escapeshellarg($this->convert),
             escapeshellarg($sourcePath),
-            self::MAX_DIMENSION,
-            self::MAX_DIMENSION,
+            escapeshellarg(self::MAX_DIMENSION.'x'.self::MAX_DIMENSION.'>'),
             escapeshellarg($outputPath),
         ), 'Preprocessing failed');
 
