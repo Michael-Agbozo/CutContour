@@ -244,7 +244,7 @@
                     <flux:menu.item :href="route('profile.edit')" icon="user" wire:navigate>{{ __('Profile') }}</flux:menu.item>
                     <flux:menu.item :href="route('billing.edit')" icon="credit-card" wire:navigate>{{ __('Billing') }}</flux:menu.item>
                     <flux:menu.separator />
-                    <form method="POST" action="{{ route('logout') }}" class="w-full">
+                    <form method="POST" action="{{ route('logout') }}" class="w-full" onsubmit="event.preventDefault(); var f=this; document.dispatchEvent(new CustomEvent('toast-show', { detail: { duration: 2500, slots: { text: 'Successfully logged out. See you next time!' }, dataset: { variant: 'success' } } })); setTimeout(() => f.submit(), 2000);">
                         @csrf
                         <flux:menu.item as="button" type="submit" icon="arrow-right-start-on-rectangle" class="w-full cursor-pointer">
                             {{ __('Log out') }}
@@ -261,6 +261,21 @@
                 <flux:toast />
             </flux:toast.group>
         @endpersist
+
+        @if(session('flux_toast'))
+            @php $fluxToast = session('flux_toast'); @endphp
+            <script>
+                document.addEventListener('alpine:initialized', function () {
+                    document.dispatchEvent(new CustomEvent('toast-show', {
+                        detail: {
+                            duration: 4000,
+                            slots:   { text: @js($fluxToast['text']) },
+                            dataset: { variant: @js($fluxToast['variant'] ?? 'success') }
+                        }
+                    }));
+                });
+            </script>
+        @endif
 
         @fluxScripts
     </body>

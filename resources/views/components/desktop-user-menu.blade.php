@@ -24,7 +24,7 @@
             <flux:menu.item :href="route('profile.edit')" icon="cog" wire:navigate>
                 {{ __('Settings') }}
             </flux:menu.item>
-            <form method="POST" action="{{ route('logout') }}" class="w-full">
+            <form method="POST" action="{{ route('logout') }}" class="w-full" onsubmit="event.preventDefault(); var f=this; document.dispatchEvent(new CustomEvent('toast-show', { detail: { duration: 2500, slots: { text: 'Successfully logged out. See you next time!' }, dataset: { variant: 'success' } } })); setTimeout(() => f.submit(), 2000);">
                 @csrf
                 <flux:menu.item
                     as="button"

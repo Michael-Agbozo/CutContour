@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign in — CutContour</title>
     @vite(['resources/css/app.css', 'resources/js/app.js'])
+    @livewireStyles
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -503,6 +504,13 @@
 <style>
     .input.error-border { border-color: var(--cut); }
 </style>
+
+<flux:toast.group>
+    <flux:toast />
+</flux:toast.group>
+
+@livewireScripts
+@fluxScripts
 
 <script>
     // Theme

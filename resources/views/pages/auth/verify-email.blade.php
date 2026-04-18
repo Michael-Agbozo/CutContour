@@ -18,7 +18,7 @@
                 </flux:button>
             </form>
 
-            <form method="POST" action="{{ route('logout') }}">
+            <form method="POST" action="{{ route('logout') }}" onsubmit="event.preventDefault(); var f=this; document.dispatchEvent(new CustomEvent('toast-show', { detail: { duration: 2500, slots: { text: 'Successfully logged out. See you next time!' }, dataset: { variant: 'success' } } })); setTimeout(() => f.submit(), 2000);">
                 @csrf
                 <flux:button variant="ghost" type="submit" class="text-sm cursor-pointer" data-test="logout-button">
                     {{ __('Log out') }}
