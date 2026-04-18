@@ -14,6 +14,36 @@ test('authenticated verified users can access job creation page', function () {
         ->assertOk();
 });
 
+test('generate rejects job name longer than 255 characters', function () {
+    $user = User::factory()->create();
+    $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
+
+    Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('file', $file)
+        ->set('jobName', str_repeat('a', 256))
+        ->set('targetWidth', 5.0)
+        ->set('targetHeight', 5.0)
+        ->set('offsetValue', 0.125)
+        ->call('generate')
+        ->assertHasErrors(['jobName' => 'max']);
+});
+
+test('generate accepts job name of 255 characters', function () {
+    $user = User::factory()->create();
+    $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
+
+    Livewire::actingAs($user)
+        ->test('pages::jobs.create')
+        ->set('file', $file)
+        ->set('jobName', str_repeat('a', 255))
+        ->set('targetWidth', 5.0)
+        ->set('targetHeight', 5.0)
+        ->set('offsetValue', 0.125)
+        ->call('generate')
+        ->assertHasNoErrors(['jobName']);
+});
+
 test('file upload rejects files exceeding max size', function () {
     config(['cutjob.max_file_size_mb' => 1]); // 1 MB limit for test
 

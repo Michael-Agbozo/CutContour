@@ -140,10 +140,12 @@ new #[Title('New Job')] class extends Component {
     {
         $this->validate([
             'file'        => ['required', 'file', 'mimes:jpg,jpeg,png,svg,pdf,ai', 'max:' . (config('cutjob.max_file_size_mb', 100) * 1024)],
+            'jobName'     => ['nullable', 'string', 'max:255'],
             'targetWidth' => ['required', 'numeric', 'gt:0'],
             'targetHeight' => ['required', 'numeric', 'gt:0'],
             'offsetValue' => ['required', 'numeric', 'gte:0'],
         ], [
+            'jobName.max'           => 'Job name must not exceed 255 characters.',
             'targetWidth.required'  => 'Width is required before generating.',
             'targetWidth.gt'        => 'Width must be greater than 0.',
             'targetHeight.required' => 'Height is required before generating.',
