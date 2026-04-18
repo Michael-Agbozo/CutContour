@@ -1,6 +1,6 @@
 # CutContour AI Generator — Product Requirements Document
 
-**Version:** 1.2  
+**Version:** 1.3  
 **Status:** Build Ready  
 **Author:** Michael Agbozo  
 **Date:** 2026-04-18
@@ -34,6 +34,8 @@
 23. [Admin Section](#23-admin-section)
 24. [Permission & Authorization System](#24-permission--authorization-system)
 25. [AI SDK Integration (Implemented)](#25-ai-sdk-integration-implemented)
+26. [Security & Quality Fixes (v1.3)](#26-security--quality-fixes-v13)
+27. [Usage Quotas & Failed Job Retention (v1.3)](#27-usage-quotas--failed-job-retention-v13)
 
 ---
 
@@ -419,16 +421,22 @@ storage/app/
 | Event | Action |
 |---|---|
 | Job created | Files stored under user path |
-| 90 days elapsed | Original + output deleted from disk |
+| 90 days elapsed (completed jobs) | Original + output deleted from disk |
+| 3 hours elapsed (failed jobs) | Files and record cleaned up aggressively |
 | After deletion | `cut_jobs.status` → `expired`; paths nulled |
 | User deletes account | All files purged immediately |
 
 ### Cleanup
 
 A **daily scheduled job** (`CleanupExpiredJobs`) runs at 02:00 and:
-1. Queries `cut_jobs` where `expires_at < now()` and `status != expired`
-2. Deletes files from storage
-3. Updates job status to `expired`
+
+1. **Completed/processing jobs:** Queries `cut_jobs` where `expires_at < now()` and `status != expired` → deletes files, marks `expired`
+2. **Failed jobs:** Queries `cut_jobs` where `status = failed` and `created_at < now() - failed_retention_hours` → deletes files, marks `expired`
+
+| Config Key | Env Variable | Default | Purpose |
+|---|---|---|---|
+| `cutjob.retention_days` | `CUTJOB_RETENTION_DAYS` | 90 | Retention window for completed jobs |
+| `cutjob.failed_retention_hours` | `CUTJOB_FAILED_RETENTION_HOURS` | 3 | Retention window for failed jobs |
 
 ---
 
@@ -458,7 +466,7 @@ A **daily scheduled job** (`CleanupExpiredJobs`) runs at 02:00 and:
 | `file_type` | `string` | `jpg`, `png`, `pdf`, `svg`, `ai` |
 | `width` | `unsignedInteger` | Pixels |
 | `height` | `unsignedInteger` | Pixels |
-| `status` | `enum` | `processing`, `completed`, `failed`, `expired` |
+| `status` | `enum` | `pending`, `processing`, `completed`, `failed`, `expired` |
 | `ai_used` | `boolean` | Whether AI path was taken |
 | `confidence_score` | `float` | Nullable — output of ConfidenceService |
 | `processing_duration_ms` | `unsignedInteger` | Nullable |
@@ -592,6 +600,7 @@ Memory-intensive operations (Potrace, ImageMagick) must be isolated. If memory l
 OPENAI_API_KEY=          # Optional — for OpenAI provider
 GEMINI_API_KEY=          # Primary — for Gemini vision (free tier available)
 CUTJOB_RETENTION_DAYS=90
+CUTJOB_FAILED_RETENTION_HOURS=3
 CUTJOB_MAX_FILE_SIZE_MB=100
 CUTJOB_CONFIDENCE_THRESHOLD=0.65
 ```
@@ -643,6 +652,8 @@ The MVP is considered successful when all of the following hold:
 | ~~Admin dashboard~~ | ~~High~~ | ~~Implemented in v1.2~~ |
 | ~~Permission system~~ | ~~High~~ | ~~Implemented in v1.2~~ |
 | ~~AI SDK Agent pattern~~ | ~~Medium~~ | ~~Implemented in v1.2~~ |
+| ~~Failed job cleanup~~ | ~~Medium~~ | ~~Implemented in v1.3 — auto-purge after 3 hours~~ |
+| ~~Usage quotas~~ | ~~Medium~~ | ~~Implemented in v1.3 — monthly job limits~~ |
 
 ---
 
@@ -689,9 +700,10 @@ Sent only for successful completions via Laravel Mail (queued).
 
 | Aspect | Detail |
 |---|---|
-| Mechanism | `URL::temporarySignedRoute()` — HMAC-signed, time-limited |
+| Mechanism (email) | `URL::temporarySignedRoute()` — HMAC-signed, 7-day expiry |
+| Mechanism (dashboard) | `URL::signedRoute()` — HMAC-signed, permanent (valid until job expires) |
+| Mechanism (create page) | `Storage::download()` via Livewire `wire:click` — streamed through Livewire's `SupportFileDownloads` hook |
 | Route | `GET /jobs/{cutJob}/download` (named `jobs.download`) |
-| Expiry | 7 days from job completion |
 | Middleware | `['auth', 'signed']` — unauthenticated users redirect to login then back |
 | Authorization | `CutJobPolicy@download` — owner-only, completed jobs only |
 | Response | `Storage::download()` streamed response with descriptive filename (`{name}_{w}x{h}.pdf`) |
@@ -847,149 +859,79 @@ SubjectIsolationAgent::assertPrompted(fn ($prompt) => $prompt->contains('subject
 
 ---
 
-## 23. Admin Section
+## 26. Security & Quality Fixes (v1.3)
 
-> **Added in v1.2** — full admin panel with role-based access.
+> **Added in v1.3** — batch of security hardening, bug fixes, and quality improvements.
 
-### Overview
+### File Upload Validation (#2)
 
-Super admins have a dedicated section at `/admin/*` with full visibility into jobs, users, and system health. The admin sidebar is separated from the workspace sidebar — admins see only admin navigation, regular users see only workspace navigation.
+- Server-side file size validation enforces `config('cutjob.max_file_size_mb')` limit (default 100 MB)
+- Validation runs before any processing begins
 
-### Admin Pages
+### Authorization Hardening (#3, #6)
 
-| Page | Route | Purpose |
-|---|---|---|
-| Dashboard | `/admin` | Stats grid (total jobs, completed, failed, AI usage rate), pipeline metrics (avg processing time, queue depth), recent failures (responsive card + table layout) |
-| All Jobs | `/admin/jobs` | Search, status/AI filter, sortable columns, inline delete, paginated 20/page |
-| Failed Jobs | `/admin/failed-jobs` | Search, expandable error details, retry (re-dispatches `ProcessCutJob`), delete, paginated 20/page |
-| Users | `/admin/users` | Search, sortable, admin role toggle, 2FA status indicator, job count per user, paginated 20/page |
-| System | `/admin/system` | Pipeline binary health checks (ImageMagick, Potrace, Inkscape, GhostScript), queue status, storage cleanup trigger, configuration display |
+- Admin job deletion requires `Gate::authorize('view-all-jobs')` — prevents non-admin users from deleting jobs even with a direct request
+- Admin `toggleAdmin` action gated with `Gate::authorize('manage-users')`
+- `CutJobPolicy@before()` grants admins access to all jobs
 
-### Middleware
+### Factory File Paths (#4)
 
-All admin routes are protected by three middleware layers:
+- `CutJobFactory` uses `Str::ulid()` instead of `fake()->uuid()` to match the `HasUlids` trait on `CutJob`
 
-```
-['auth', 'verified', 'admin']
-```
+### N+1 Query Prevention (#5)
 
-| Middleware | Purpose |
-|---|---|
-| `auth` | Requires authenticated session |
-| `verified` | Requires email verification |
-| `admin` | `EnsureUserIsAdmin` — checks `$user->is_admin`, aborts 403 |
+- Dashboard job status polling (`checkJobStatus`) selects only required columns instead of `SELECT *`
 
-### Login Redirect
+### Error Message Security (#7)
 
-Custom `LoginResponse` (overrides Fortify's default):
-- Admin users → `route('admin.dashboard')`
-- Regular users → `route('dashboard')`
+- Internal exception details are no longer exposed to end users
+- Failed jobs show a generic user-friendly message; full stack traces remain in server logs only
 
-### Implementation
+### Input Validation (#8, #10)
 
-- All admin pages are Livewire SFC components (⚡ prefix)
-- Routes defined in `routes/admin.php` (required from `routes/web.php`)
-- `CutJobPolicy` has a `before()` method granting admins full access to all jobs
+- `jobName` field validates with `max:255` to prevent oversized input
+- Target dimensions (width/height) capped at 4096 px maximum to prevent memory abuse
 
----
+### Model Security (#9)
 
-## 24. Permission & Authorization System
+- Removed system-only fields (`ai_used`, `confidence_score`, `processing_duration_ms`, `error_message`) from `CutJob::$fillable`
+- These fields are now set only internally by the processing pipeline
 
-> **Added in v1.2** — centralized permission enum with Gate registration.
+### Scope Naming (#11)
 
-### Permission Enum
+- Renamed `scopePending` to `scopeVisible` on `CutJob` — the scope filters out expired jobs, not pending ones
 
-`App\Permission` — a backed enum with 5 named abilities:
+### SVG Path Validation (#12)
 
-| Permission | Slug | Check |
-|---|---|---|
-| `AccessAdmin` | `access-admin` | `$user->is_admin` |
-| `AccessWorkspace` | `access-workspace` | `!$user->is_admin` |
-| `ManageUsers` | `manage-users` | `$user->is_admin` |
-| `ManageSystem` | `manage-system` | `$user->is_admin` |
-| `ViewAllJobs` | `view-all-jobs` | `$user->is_admin` |
-
-### Gate Registration
-
-Gates are registered automatically in `AppServiceProvider::registerPolicies()`:
-
-```php
-foreach (Permission::cases() as $permission) {
-    Gate::define($permission->value, fn (User $user) => $permission->check($user));
-}
-```
-
-### Sidebar Scoping
-
-- Workspace nav (Dashboard, New Job, Recent Jobs): `@can('access-workspace')` — visible only to regular users
-- Admin nav (Dashboard, All Jobs, Failed Jobs, Users, System): `@can('access-admin')` — visible only to admins
-- Admins see **only** admin navigation; users see **only** workspace navigation
-
-### Users Table
-
-| Column | Type | Purpose |
-|---|---|---|
-| `is_admin` | `boolean` | Default `false` — determines role |
-| `two_factor_secret` | `text` | Fortify 2FA TOTP secret (nullable) |
-| `two_factor_recovery_codes` | `text` | Backup codes (nullable) |
+- `AIService` validates SVG path data returned by the AI agent before writing to disk
+- Prevents malformed or empty paths from entering the vectorization pipeline
 
 ---
 
-## 25. AI SDK Integration (Implemented)
+## 27. Usage Quotas & Failed Job Retention (v1.3)
 
-> **Added in v1.2** — replaced raw HTTP calls with Laravel AI SDK Agent pattern.
+> **Added in v1.3** — monthly usage tracking and aggressive failed job cleanup.
 
-### Package
+### Monthly Usage Quotas (#24)
 
-`laravel/ai` v0.6.0 (official first-party Laravel AI package, wraps Prism PHP internally).
+The dashboard tracks per-user monthly job usage against a plan limit.
 
-### Architecture
-
-```
-ProcessCutJob
-    ↓ (confidence low)
-AIService::analyze()
-    ↓
-SubjectIsolationAgent::prompt()
-    ↓ (with image attachment via Prism\Prism\ValueObjects\Media\Image)
-Gemini 2.0 Flash (vision)
-    ↓ (structured JSON output)
-{ svg_path: "M ...", confidence: 0.92 }
-    ↓
-AIService writes SVG to disk
-    ↓
-ProcessCutJob continues with AI-generated mask
-```
-
-### Key Files
-
-| File | Purpose |
+| Aspect | Detail |
 |---|---|
-| `app/Ai/Agents/SubjectIsolationAgent.php` | Agent class — `HasStructuredOutput`, returns `svg_path` + `confidence` |
-| `app/Services/AIService.php` | Orchestrates agent call, handles fallback, writes SVG output |
-| `config/ai.php` | Provider configuration (published from `laravel/ai`) |
+| Metric | Count of non-failed jobs created in the current calendar month |
+| Default limit | 10 jobs (Starter plan) |
+| Display | Progress bar on dashboard with `X of Y jobs used` |
+| Exclusion | Failed jobs do **not** count toward the quota |
+| Upgrade CTA | Links to billing/upgrade page when approaching limit |
 
-### Provider Support
+### Failed Job Auto-Deletion (#26)
 
-Multiple AI providers can be configured simultaneously via `.env`:
+Failed jobs are cleaned up aggressively since they have no useful output.
 
-```env
-GEMINI_API_KEY=...    # Primary (free tier available)
-OPENAI_API_KEY=...    # Optional
-ANTHROPIC_API_KEY=... # Optional
-```
-
-Failover is supported via the `#[Provider]` attribute or per-prompt:
-
-```php
-$response = (new SubjectIsolationAgent)->prompt('...', provider: [Lab::Gemini, Lab::OpenAI]);
-```
-
-### Testing
-
-The agent supports `fake()` for testing without real API calls:
-
-```php
-SubjectIsolationAgent::fake([['svg_path' => 'M 0 0 L 100 0 Z', 'confidence' => 0.9]]);
-SubjectIsolationAgent::assertPrompted(fn ($prompt) => $prompt->contains('subject'));
-```
+| Aspect | Detail |
+|---|---|
+| Retention window | 3 hours (configurable via `CUTJOB_FAILED_RETENTION_HOURS`) |
+| Cleanup trigger | Same `cutjob:cleanup` scheduled command (daily at 02:00) |
+| Behavior | Files purged from storage, record marked `expired`, paths nulled |
+| Recent failed jobs | Jobs less than 3 hours old are preserved for user visibility |
+| Completed jobs | Unaffected — retain full 90-day retention window |
