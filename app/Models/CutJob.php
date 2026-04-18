@@ -31,10 +31,6 @@ class CutJob extends Model
         'width',
         'height',
         'status',
-        'ai_used',
-        'confidence_score',
-        'processing_duration_ms',
-        'error_message',
         'expires_at',
     ];
 
