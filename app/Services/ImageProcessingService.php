@@ -11,40 +11,64 @@ use RuntimeException;
  */
 class ImageProcessingService
 {
-    /** Maximum dimension (px) before resizing kicks in. */
-    private const MAX_DIMENSION = 10_000;
+    private const MAX_DIMENSION = 4_096;
+
+    private string $convert;
+
+    private string $identify;
+
+    public function __construct()
+    {
+        $this->convert = config('cutjob.binaries.convert', 'convert');
+        $this->identify = config('cutjob.binaries.identify', 'identify');
+    }
 
     /**
      * Preprocess the uploaded file into a normalised PNG ready for the pipeline.
+     * If target dimensions are supplied the image is scaled to fit within them
+     * (preserving aspect ratio) then centre-padded to the exact canvas size.
      *
      * @return array{path: string, width: int, height: int}
      *
      * @throws RuntimeException
      */
-    public function preprocess(string $sourcePath, string $outputDir): array
-    {
+    public function preprocess(
+        string $sourcePath,
+        string $outputDir,
+        ?int $targetWidthPx = null,
+        ?int $targetHeightPx = null,
+    ): array {
         $outputPath = $outputDir.'/preprocessed.png';
 
         $this->ensureDirectory($outputDir);
 
-        // Normalise to PNG, strip ICC profile quirks, auto-orient
+        // Clamp during the initial convert so ImageMagick never decodes the full
+        // raster at 300 DPI before capping — critical for large photos/WhatsApp images.
         $this->exec(sprintf(
-            'convert %s -auto-orient +profile "!exif,*" -colorspace sRGB -density 300 %s',
+            '%s %s -auto-orient +profile "!exif,*" -colorspace sRGB -density 300 -resize %dx%d\> %s',
+            escapeshellarg($this->convert),
             escapeshellarg($sourcePath),
+            self::MAX_DIMENSION,
+            self::MAX_DIMENSION,
             escapeshellarg($outputPath),
         ), 'Preprocessing failed');
 
-        // Resize if oversized, preserving aspect ratio
         $dimensions = $this->getDimensions($outputPath);
-        if ($dimensions['width'] > self::MAX_DIMENSION || $dimensions['height'] > self::MAX_DIMENSION) {
+
+        if ($targetWidthPx !== null && $targetHeightPx !== null) {
+            $background = $this->hasAlphaChannel($outputPath) ? 'none' : 'white';
             $this->exec(sprintf(
-                'convert %s -resize %dx%d\> %s',
+                '%s %s -resize %dx%d -gravity Center -background %s -extent %dx%d %s',
+                escapeshellarg($this->convert),
                 escapeshellarg($outputPath),
-                self::MAX_DIMENSION,
-                self::MAX_DIMENSION,
+                $targetWidthPx,
+                $targetHeightPx,
+                $background,
+                $targetWidthPx,
+                $targetHeightPx,
                 escapeshellarg($outputPath),
-            ), 'Resize failed');
-            $dimensions = $this->getDimensions($outputPath);
+            ), 'Resize to target dimensions failed');
+            $dimensions = ['width' => $targetWidthPx, 'height' => $targetHeightPx];
         }
 
         Log::debug('ImageProcessingService: preprocessed', [
@@ -57,8 +81,12 @@ class ImageProcessingService
     }
 
     /**
-     * Generate a binary mask from the preprocessed image using Canny edge detection
-     * followed by flood-fill to produce a solid subject mask.
+     * Generate a binary subject mask from the preprocessed image.
+     *
+     * For images with an alpha channel (e.g. transparent PNGs) the alpha is
+     * extracted directly, giving a pixel-perfect subject boundary.
+     * For opaque images Canny edge detection + multi-corner flood-fill is used
+     * to isolate the subject from the background.
      *
      * @throws RuntimeException
      */
@@ -66,15 +94,57 @@ class ImageProcessingService
     {
         $maskPath = $outputDir.'/mask.png';
 
-        $this->exec(sprintf(
-            'convert %s -colorspace Gray -canny 0x1+10%%+30%% -negate -fill white -draw "color 0,0 floodfill" -alpha remove %s',
-            escapeshellarg($preprocessedPath),
-            escapeshellarg($maskPath),
-        ), 'Mask generation failed');
+        if ($this->hasAlphaChannel($preprocessedPath)) {
+            $this->exec(sprintf(
+                '%s %s -alpha extract -threshold 50%% %s',
+                escapeshellarg($this->convert),
+                escapeshellarg($preprocessedPath),
+                escapeshellarg($maskPath),
+            ), 'Alpha mask extraction failed');
+        } else {
+            $dims = $this->getDimensions($preprocessedPath);
+            $w = max(0, $dims['width'] - 1);
+            $h = max(0, $dims['height'] - 1);
+
+            // Canny edges → close gaps → flood-fill background from all four
+            // corners with white → negate so subject = white, background = black
+            // → small dilation fills the thin edge ring left by Canny
+            $this->exec(sprintf(
+                '%s %s -colorspace Gray -blur 1x1 -canny 0x1+8%%+20%% -morphology Close Disk:4 -fill white -draw "color 0,0 floodfill" -draw "color %d,0 floodfill" -draw "color 0,%d floodfill" -draw "color %d,%d floodfill" -negate -morphology Dilate Disk:2 %s',
+                escapeshellarg($this->convert),
+                escapeshellarg($preprocessedPath),
+                $w, $h, $w, $h,
+                escapeshellarg($maskPath),
+            ), 'Mask generation failed');
+        }
 
         Log::debug('ImageProcessingService: mask generated', ['mask' => $maskPath]);
 
         return $maskPath;
+    }
+
+    /**
+     * Dilate a binary mask outward by the given number of pixels (contour offset).
+     *
+     * @throws RuntimeException
+     */
+    public function applyOffset(string $maskPath, string $outputDir, int $offsetPx): string
+    {
+        if ($offsetPx <= 0) {
+            return $maskPath;
+        }
+
+        $outputPath = $outputDir.'/mask_offset.png';
+
+        $this->exec(sprintf(
+            '%s %s -morphology Dilate Disk:%d %s',
+            escapeshellarg($this->convert),
+            escapeshellarg($maskPath),
+            $offsetPx,
+            escapeshellarg($outputPath),
+        ), 'Offset dilation failed');
+
+        return $outputPath;
     }
 
     /**
@@ -87,7 +157,8 @@ class ImageProcessingService
         $normalizedPath = $outputDir.'/mask_normalized.png';
 
         $this->exec(sprintf(
-            'convert %s -colorspace Gray -threshold 50%% %s',
+            '%s %s -colorspace Gray -threshold 50%% %s',
+            escapeshellarg($this->convert),
             escapeshellarg($aiMaskPath),
             escapeshellarg($normalizedPath),
         ), 'Mask normalization failed');
@@ -100,7 +171,8 @@ class ImageProcessingService
     {
         $output = [];
         exec(sprintf(
-            'identify -format "%%w %%h" %s 2>/dev/null',
+            '%s -format "%%w %%h" %s 2>/dev/null',
+            escapeshellarg($this->identify),
             escapeshellarg($imagePath),
         ), $output);
 
@@ -111,6 +183,18 @@ class ImageProcessingService
         [$width, $height] = explode(' ', trim($output[0]));
 
         return ['width' => (int) $width, 'height' => (int) $height];
+    }
+
+    private function hasAlphaChannel(string $imagePath): bool
+    {
+        $output = [];
+        exec(sprintf(
+            '%s -format "%%A" %s 2>/dev/null',
+            escapeshellarg($this->identify),
+            escapeshellarg($imagePath),
+        ), $output);
+
+        return isset($output[0]) && strtolower(trim($output[0])) === 'true';
     }
 
     private function ensureDirectory(string $dir): void

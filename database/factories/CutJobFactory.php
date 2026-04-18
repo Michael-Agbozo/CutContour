@@ -33,7 +33,7 @@ class CutJobFactory extends Factory
             'confidence_score' => null,
             'processing_duration_ms' => null,
             'error_message' => null,
-            'expires_at' => now()->addDays(90),
+            'expires_at' => now()->addDays(config('cutjob.retention_days', 90)),
         ];
     }
 
