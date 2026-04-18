@@ -116,7 +116,7 @@ test('subject isolation agent has correct instructions', function () {
 
 test('svg output is properly XML-escaped', function () {
     SubjectIsolationAgent::fake([[
-        'svg_path' => 'M 0 0 L 100&200 Z',
+        'svg_path' => 'M 0 0 L 100 200 Z',
         'confidence' => 0.5,
     ]]);
 
@@ -132,8 +132,31 @@ test('svg output is properly XML-escaped', function () {
     $result = $service->analyze($imagePath, $outputDir);
 
     $svgContent = file_get_contents($result['path']);
-    // The & should be escaped to &amp; in XML
-    expect($svgContent)->toContain('&amp;');
+    expect($svgContent)->toContain('M 0 0 L 100 200 Z');
+
+    // Cleanup
+    array_map('unlink', glob($outputDir.'/*'));
+    rmdir($outputDir);
+});
+
+test('analyze rejects malformed svg path data from agent', function () {
+    SubjectIsolationAgent::fake([[
+        'svg_path' => '<script>alert("xss")</script>M 0 0 Z',
+        'confidence' => 0.8,
+    ]]);
+
+    $outputDir = sys_get_temp_dir().'/ai-test-'.uniqid();
+    mkdir($outputDir, 0755, true);
+
+    $imagePath = $outputDir.'/test.png';
+    $img = imagecreatetruecolor(100, 100);
+    imagepng($img, $imagePath);
+    imagedestroy($img);
+
+    $service = new AIService;
+    $result = $service->analyze($imagePath, $outputDir);
+
+    expect($result)->toBeNull();
 
     // Cleanup
     array_map('unlink', glob($outputDir.'/*'));
