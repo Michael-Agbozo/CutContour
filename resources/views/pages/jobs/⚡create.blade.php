@@ -1,5 +1,9 @@
 <?php
 
+use App\Jobs\ProcessCutJob;
+use App\Models\CutJob;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Storage;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -16,6 +20,12 @@ new #[Title('New Job')] class extends Component {
 
     public string $errorMessage = '';
 
+    /** ULID of the in-flight CutJob — used for async status polling. */
+    public ?string $currentJobId = null;
+
+    /** ULID of the last completed CutJob — used for the download action. */
+    public ?string $completedJobId = null;
+
     /** Populated once the backend pipeline completes (PRD §13) */
     public ?string $outputFilename = null;
     public ?int $outputWidth = null;
@@ -26,8 +36,15 @@ new #[Title('New Job')] class extends Component {
     /** Dimension display unit */
     public string $unit = 'in';
 
-    /** Contour offset */
-    public string $offsetValue = '+0.125';
+    /** User-editable target dimensions in the selected unit (null = auto from pipeline) */
+    public ?float $targetWidth = null;
+    public ?float $targetHeight = null;
+
+    /** Contour offset in the selected unit */
+    public float $offsetValue = 0.125;
+
+    /** User-provided job name; defaults to "untitled_{w}x{h}" at download time. */
+    public string $jobName = '';
 
     /** Spot color — customisable per print house (PRD §8) */
     public string $spotColorName = 'CutContour';
@@ -52,6 +69,55 @@ new #[Title('New Job')] class extends Component {
         $this->resetSteps();
     }
 
+    /** When the unit changes, recompute target dimensions from the stored px values. */
+    public function updatedUnit(): void
+    {
+        if ($this->outputWidth !== null) {
+            $this->targetWidth = $this->pxToUnit($this->outputWidth);
+        }
+        if ($this->outputHeight !== null) {
+            $this->targetHeight = $this->pxToUnit($this->outputHeight);
+        }
+    }
+
+    /** When the user edits width, sync back to px for canvas ruler. */
+    public function updatedTargetWidth(): void
+    {
+        if ($this->targetWidth !== null) {
+            $this->outputWidth = $this->unitToPx($this->targetWidth);
+        }
+    }
+
+    /** When the user edits height, sync back to px for canvas ruler. */
+    public function updatedTargetHeight(): void
+    {
+        if ($this->targetHeight !== null) {
+            $this->outputHeight = $this->unitToPx($this->targetHeight);
+        }
+    }
+
+    private function pxToUnit(int $px): float
+    {
+        return (float) match ($this->unit) {
+            'cm' => round($px / 96 * 2.54, 2),
+            'mm' => round($px / 96 * 25.4, 1),
+            'pt' => round($px / 96 * 72, 1),
+            'px' => $px,
+            default => round($px / 96, 2), // in
+        };
+    }
+
+    private function unitToPx(float $value): int
+    {
+        return (int) round(match ($this->unit) {
+            'cm' => $value / 2.54 * 96,
+            'mm' => $value / 25.4 * 96,
+            'pt' => $value / 72 * 96,
+            'px' => $value,
+            default => $value * 96, // in
+        });
+    }
+
     /**
      * Called by Livewire after the temporary file upload completes.
      * Validates per PRD §6 then moves to processing state.
@@ -62,23 +128,125 @@ new #[Title('New Job')] class extends Component {
             'file' => [
                 'required',
                 'file',
-                'max:102400', // 100 MB — PRD §6
                 'mimes:jpg,jpeg,png,svg,pdf,ai',
             ],
+        ]);
+
+        // File accepted — user must set dimensions then click Generate
+    }
+
+    public function generate(): void
+    {
+        $this->validate([
+            'file'        => ['required', 'file', 'mimes:jpg,jpeg,png,svg,pdf,ai'],
+            'targetWidth' => ['required', 'numeric', 'gt:0'],
+            'targetHeight' => ['required', 'numeric', 'gt:0'],
+            'offsetValue' => ['required', 'numeric', 'gte:0'],
+        ], [
+            'targetWidth.required'  => 'Width is required before generating.',
+            'targetWidth.gt'        => 'Width must be greater than 0.',
+            'targetHeight.required' => 'Height is required before generating.',
+            'targetHeight.gt'       => 'Height must be greater than 0.',
+            'offsetValue.gte'       => 'Offset must be 0 or greater.',
         ]);
 
         $this->state = 'processing';
         $this->resetSteps();
 
-        // TODO: dispatch ProcessCutJob once the pipeline services are built.
-        // ConfidenceService decides Fast vs AI-Enhanced path (PRD §7).
+        try {
+            /** @var \App\Models\User $user */
+            $user = auth()->user();
+            $ext = strtolower($this->file->getClientOriginalExtension());
+
+            $cutJob = CutJob::create([
+                'user_id'      => $user->id,
+                'original_name' => $this->file->getClientOriginalName(),
+                'job_name'     => trim($this->jobName) ?: null,
+                'file_type'    => $ext,
+                'status'       => 'processing',
+                'expires_at'   => now()->addDays(config('cutjob.retention_days', 90)),
+            ]);
+
+            $storagePath = $this->file->storeAs(
+                "users/{$user->id}/jobs/{$cutJob->id}",
+                "original.{$ext}",
+            );
+
+            if ($storagePath === false) {
+                throw new \RuntimeException('Failed to store uploaded file.');
+            }
+
+            $cutJob->update(['file_path' => $storagePath]);
+
+            $targetWidthPx = $this->unitToPx($this->targetWidth ?? 0);
+            $targetHeightPx = $this->unitToPx($this->targetHeight ?? 0);
+            $offsetPx = $this->unitToPx($this->offsetValue);
+
+            ProcessCutJob::dispatch($cutJob, $targetWidthPx, $targetHeightPx, $offsetPx);
+
+            $this->currentJobId = $cutJob->id;
+        } catch (Throwable $e) {
+            $this->errorMessage = $e->getMessage();
+            $this->state = 'failed';
+        }
+    }
+
+    /** Called every 2 s by wire:poll while state === 'processing'. */
+    public function checkJobStatus(): void
+    {
+        if ($this->currentJobId === null) {
+            return;
+        }
+
+        $cutJob = CutJob::find($this->currentJobId);
+
+        if ($cutJob === null) {
+            return;
+        }
+
+        if ($cutJob->status === 'completed') {
+            $this->outputWidth = $cutJob->width;
+            $this->outputHeight = $cutJob->height;
+            $this->outputFilename = $cutJob->output_path ? basename($cutJob->output_path) : null;
+            $this->processingMs = $cutJob->processing_duration_ms;
+            $this->aiUsed = $cutJob->ai_used;
+
+            if ($this->outputWidth !== null) {
+                $this->targetWidth = $this->pxToUnit($this->outputWidth);
+            }
+            if ($this->outputHeight !== null) {
+                $this->targetHeight = $this->pxToUnit($this->outputHeight);
+            }
+
+            $this->completedJobId = $cutJob->id;
+            $this->currentJobId = null;
+            $this->state = 'completed';
+        } elseif ($cutJob->status === 'failed') {
+            $this->errorMessage = $cutJob->error_message ?? 'Processing failed.';
+            $this->currentJobId = null;
+            $this->state = 'failed';
+        }
     }
 
     public function removeFile(): void
     {
-        $this->reset('file', 'errorMessage', 'outputFilename', 'outputWidth', 'outputHeight', 'processingMs', 'aiUsed');
+        $this->reset('file', 'jobName', 'errorMessage', 'outputFilename', 'outputWidth', 'outputHeight',
+            'processingMs', 'aiUsed', 'targetWidth', 'targetHeight', 'currentJobId', 'completedJobId');
         $this->state = 'idle';
         $this->resetSteps();
+    }
+
+    public function download(): mixed
+    {
+        $cutJob = CutJob::findOrFail($this->completedJobId);
+
+        Gate::authorize('download', $cutJob);
+
+        $downloadName = $cutJob->job_name
+            ? rtrim($cutJob->job_name, '.pdf').'.pdf'
+            : 'untitled_'.$cutJob->width.'x'.$cutJob->height.'.pdf';
+
+        return Storage::download($cutJob->output_path, $downloadName);
     }
 
     /**
@@ -140,7 +308,7 @@ new #[Title('New Job')] class extends Component {
     Livewire auto-applies layouts::app (sidebar) via component_layout config.
     -m-6 lg:-m-8 cancels flux:main padding so the canvas bleeds edge-to-edge.
 --}}
-<div class="-m-6 flex flex-col overflow-hidden lg:-m-8 h-[calc(100dvh-4rem)] lg:h-dvh">
+<div class="-m-6 flex flex-col lg:-m-8 lg:h-dvh lg:overflow-hidden">
 
     {{-- ── Top status bar ─────────────────────────────────── --}}
     <div class="flex shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4 py-2.5 dark:border-zinc-800 dark:bg-zinc-900">
@@ -183,15 +351,14 @@ new #[Title('New Job')] class extends Component {
     </div>
 
     {{-- ── Main two-column area ────────────────────────────── --}}
-    <div class="flex min-h-0 flex-1 overflow-hidden">
+    <div class="flex flex-col lg:flex-row lg:min-h-0 lg:flex-1 lg:overflow-hidden">
 
         {{-- ── Canvas panel (left) ─────────────────────────── --}}
-        <div class="canvas-dots relative flex flex-1 flex-col items-center justify-center overflow-auto bg-zinc-100 dark:bg-zinc-950">
+        <div class="canvas-dots relative flex min-h-[45vh] flex-col items-center justify-center overflow-auto bg-zinc-100 dark:bg-zinc-950 lg:min-h-0 lg:flex-1">
 
             @if($state === 'idle')
             <div class="pointer-events-none flex select-none flex-col items-center gap-3">
-                <div class="relative rounded-lg bg-white shadow-2xl ring-1 ring-zinc-900/10 dark:bg-zinc-900 dark:ring-white/5"
-                     style="width: 280px; height: 360px;">
+                <div class="relative w-[260px] h-[320px] sm:w-[280px] sm:h-[360px] rounded-lg bg-white shadow-2xl ring-1 ring-zinc-900/10 dark:bg-zinc-900 dark:ring-white/5">
                     <div class="absolute inset-5 rounded-lg" style="border: 1.5px dashed {{ $this->spotColorHex }}; opacity: 0.25;"></div>
                     <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
                         <div class="flex size-12 items-center justify-center rounded-xl bg-zinc-100 dark:bg-zinc-800">
@@ -214,7 +381,8 @@ new #[Title('New Job')] class extends Component {
             </div>
 
             @elseif($state === 'uploading' || $state === 'processing')
-            <div class="mx-4 w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-7 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+            <div wire:poll.2000ms="checkJobStatus"
+                 class="mx-4 w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-7 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
                 <div class="mb-5 flex items-center gap-2.5">
                     <svg class="size-4 shrink-0 animate-spin text-cutcontour" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/>
@@ -262,10 +430,10 @@ new #[Title('New Job')] class extends Component {
             </div>
 
             @elseif($state === 'completed')
-            <div class="relative p-14">
+            <div class="relative p-6 lg:p-14">
 
                 {{-- Vertical ruler --}}
-                <div class="absolute bottom-14 left-5 top-14 flex items-center justify-center">
+                <div class="absolute bottom-6 left-5 top-6 hidden items-center justify-center lg:flex lg:bottom-14 lg:top-14">
                     <div class="relative h-full w-0">
                         <div class="absolute inset-y-0 left-0 w-px bg-zinc-300 dark:bg-zinc-700"></div>
                         <div class="absolute left-0 top-0 h-2 w-px -translate-y-1 bg-zinc-400 dark:bg-zinc-500"></div>
@@ -296,7 +464,7 @@ new #[Title('New Job')] class extends Component {
                 </div>
 
                 {{-- Horizontal ruler --}}
-                <div class="absolute bottom-5 left-14 right-14 flex items-center">
+                <div class="absolute bottom-5 left-14 right-14 hidden items-center lg:flex">
                     <div class="relative w-full">
                         <div class="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-zinc-300 dark:bg-zinc-700"></div>
                         <div class="absolute left-0 top-1/2 h-2 w-px -translate-y-1/2 bg-zinc-400 dark:bg-zinc-500"></div>
@@ -329,7 +497,7 @@ new #[Title('New Job')] class extends Component {
         </div>{{-- /canvas --}}
 
         {{-- ── Right config panel ──────────────────────────── --}}
-        <div class="flex w-80 shrink-0 flex-col overflow-y-auto border-l border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <div class="flex w-full shrink-0 flex-col overflow-y-auto border-t border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 lg:w-80 lg:border-t-0 lg:border-l">
 
             <div class="shrink-0 border-b border-zinc-100 px-5 py-4 dark:border-zinc-800">
                 <h2 class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Job Configuration</h2>
@@ -338,91 +506,19 @@ new #[Title('New Job')] class extends Component {
 
             <div class="flex flex-1 flex-col gap-5 px-5 py-5">
 
-                {{-- ── Source Artwork ────────────────────── --}}
+                {{-- ── Job Name ──────────────────────────── --}}
                 <div>
                     <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
-                        Source Artwork
+                        Job Name
                     </p>
-
-                    @if($state === 'idle')
-                    <div
-                        x-data="{
-                            active: false,
-                            handleDrop(e) {
-                                this.active = false;
-                                const files = e.dataTransfer.files;
-                                if (!files.length) return;
-                                const dt = new DataTransfer();
-                                dt.items.add(files[0]);
-                                this.$refs.picker.files = dt.files;
-                                this.$refs.picker.dispatchEvent(new Event('change', { bubbles: true }));
-                            }
-                        }"
-                        x-on:dragover.prevent="active = true"
-                        x-on:dragleave.prevent="active = false"
-                        x-on:drop.prevent="handleDrop($event)"
-                        :class="active
-                            ? 'border-cutcontour bg-pink-50/60 dark:bg-pink-950/10'
-                            : 'border-zinc-200 dark:border-zinc-700 hover:border-cutcontour hover:bg-zinc-50 dark:hover:bg-zinc-800/50'"
-                        class="group relative flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-6 text-center transition-all duration-150"
-                        @click="$refs.picker.click()"
-                    >
-                        <input
-                            x-ref="picker"
-                            type="file"
-                            accept=".jpg,.jpeg,.png,.svg,.pdf,.ai"
-                            class="sr-only"
-                            wire:model="file"
-                        />
-
-                        {{-- Livewire upload-in-progress overlay --}}
-                        <div wire:loading wire:target="file"
-                             class="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-xl bg-white/90 dark:bg-zinc-900/90">
-                            <svg class="size-5 animate-spin text-cutcontour" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/>
-                                <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                            </svg>
-                            <span class="text-xs font-medium text-zinc-500 dark:text-zinc-400">Uploading…</span>
-                        </div>
-
-                        <div class="flex size-9 items-center justify-center rounded-lg bg-zinc-100 transition-colors dark:bg-zinc-800 group-hover:bg-pink-50 dark:group-hover:bg-pink-950/20">
-                            <svg class="size-4 text-zinc-400 transition-colors group-hover:text-cutcontour" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/>
-                            </svg>
-                        </div>
-                        <div>
-                            <p class="text-xs font-medium text-zinc-700 dark:text-zinc-300">Drag &amp; drop file here</p>
-                            <p class="mt-0.5 text-[10px] text-zinc-400 dark:text-zinc-500">
-                                PNG, JPG, SVG, PDF, AI — up to 100 MB
-                            </p>
-                        </div>
-                    </div>
-
-                    @error('file')
-                        <p class="mt-2 text-xs text-red-500">{{ $message }}</p>
-                    @enderror
-
-                    @else
-                    <div class="flex items-center gap-2.5 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-800/50">
-                        <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-white shadow-sm ring-1 ring-zinc-200 dark:bg-zinc-700 dark:ring-zinc-600">
-                            <flux:icon icon="document" class="size-4 text-zinc-400" />
-                        </div>
-                        <div class="min-w-0 flex-1">
-                            @if($file)
-                            <p class="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">{{ $file->getClientOriginalName() }}</p>
-                            <p class="text-[10px] text-zinc-400 dark:text-zinc-500">{{ number_format($file->getSize() / 1048576, 2) }} MB</p>
-                            @endif
-                        </div>
-                        @if($state !== 'processing' && $state !== 'uploading')
-                        <button wire:click="removeFile"
-                                class="shrink-0 text-zinc-400 transition-colors hover:text-red-500">
-                            <svg class="size-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
-                            </svg>
-                        </button>
-                        @endif
-                    </div>
-                    @endif
+                    <input
+                        type="text"
+                        wire:model.defer="jobName"
+                        placeholder="e.g. Summer Sale Banner"
+                        maxlength="80"
+                        class="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-800 placeholder-zinc-300 focus:border-cutcontour/50 focus:outline-none focus:ring-2 focus:ring-cutcontour/20 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-200 dark:placeholder-zinc-600"
+                    />
+                    <p class="mt-1 text-[10px] text-zinc-400 dark:text-zinc-500">Optional — used as the downloaded filename.</p>
                 </div>
 
                 {{-- ── Target Dimensions ─────────────────── --}}
@@ -431,21 +527,43 @@ new #[Title('New Job')] class extends Component {
                         Target Dimensions
                     </p>
                     <div class="flex gap-2">
-                        <div class="flex flex-1 items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800/50">
-                            <span class="shrink-0 text-[10px] font-bold text-zinc-400">W</span>
-                            <span class="flex-1 text-center font-mono text-sm text-zinc-700 dark:text-zinc-300">
-                                {{ $this->formatDimension($outputWidth) }}
-                            </span>
+                        <div class="flex flex-col min-w-0 flex-1 gap-1">
+                            <div class="flex items-center gap-1.5 rounded-lg border px-3 py-2 focus-within:ring-2 focus-within:ring-cutcontour/20
+                                        {{ $errors->has('targetWidth') ? 'border-red-400 bg-red-50 focus-within:border-red-400 dark:border-red-500 dark:bg-red-950/20' : 'border-zinc-200 bg-white focus-within:border-cutcontour/50 dark:border-zinc-700 dark:bg-zinc-800/50' }}">
+                                <span class="shrink-0 text-[10px] font-bold {{ $errors->has('targetWidth') ? 'text-red-400' : 'text-zinc-400' }}">W</span>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    wire:model.defer="targetWidth"
+                                    placeholder="—"
+                                    class="min-w-0 w-full bg-transparent text-center font-mono text-sm text-zinc-700 placeholder-zinc-300 focus:outline-none dark:text-zinc-300 dark:placeholder-zinc-600"
+                                />
+                            </div>
+                            @error('targetWidth')
+                                <p class="text-[10px] text-red-500">{{ $message }}</p>
+                            @enderror
                         </div>
-                        <div class="flex flex-1 items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800/50">
-                            <span class="shrink-0 text-[10px] font-bold text-zinc-400">H</span>
-                            <span class="flex-1 text-center font-mono text-sm text-zinc-700 dark:text-zinc-300">
-                                {{ $this->formatDimension($outputHeight) }}
-                            </span>
+                        <div class="flex flex-col min-w-0 flex-1 gap-1">
+                            <div class="flex items-center gap-1.5 rounded-lg border px-3 py-2 focus-within:ring-2 focus-within:ring-cutcontour/20
+                                        {{ $errors->has('targetHeight') ? 'border-red-400 bg-red-50 focus-within:border-red-400 dark:border-red-500 dark:bg-red-950/20' : 'border-zinc-200 bg-white focus-within:border-cutcontour/50 dark:border-zinc-700 dark:bg-zinc-800/50' }}">
+                                <span class="shrink-0 text-[10px] font-bold {{ $errors->has('targetHeight') ? 'text-red-400' : 'text-zinc-400' }}">H</span>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    wire:model.defer="targetHeight"
+                                    placeholder="—"
+                                    class="min-w-0 w-full bg-transparent text-center font-mono text-sm text-zinc-700 placeholder-zinc-300 focus:outline-none dark:text-zinc-300 dark:placeholder-zinc-600"
+                                />
+                            </div>
+                            @error('targetHeight')
+                                <p class="text-[10px] text-red-500">{{ $message }}</p>
+                            @enderror
                         </div>
                         {{-- Unit selector --}}
                         <select wire:model.live="unit"
-                                class="rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-2 text-xs font-medium text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-cutcontour/40 cursor-pointer">
+                                class="w-14 shrink-0 rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-2 text-xs font-medium text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-cutcontour/40 cursor-pointer">
                             <option value="in">in</option>
                             <option value="cm">cm</option>
                             <option value="mm">mm</option>
@@ -461,16 +579,21 @@ new #[Title('New Job')] class extends Component {
                         <p class="text-xs font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
                             Contour Cutline
                         </p>
-                        <button type="button" class="text-[10px] font-semibold text-cutcontour hover:underline">
-                            Auto-detect
-                        </button>
                     </div>
-                    <div class="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800/50">
-                        <span class="text-xs text-zinc-400">Offset</span>
-                        <span class="ml-auto font-mono text-sm text-zinc-700 dark:text-zinc-300">
-                            {{ $offsetValue }} {{ $unit }}
-                        </span>
+                    <div class="flex items-center gap-2 rounded-lg border px-3 py-2 focus-within:ring-2 focus-within:ring-cutcontour/20
+                                {{ $errors->has('offsetValue') ? 'border-red-400 bg-red-50 dark:border-red-500 dark:bg-red-950/20' : 'border-zinc-200 bg-white focus-within:border-cutcontour/50 dark:border-zinc-700 dark:bg-zinc-800/50' }}">
+                        <span class="shrink-0 text-xs {{ $errors->has('offsetValue') ? 'text-red-400' : 'text-zinc-400' }}">Offset</span>
+                        <input
+                            type="number"
+                            step="0.001"
+                            wire:model.defer="offsetValue"
+                            class="ml-auto w-20 bg-transparent text-right font-mono text-sm text-zinc-700 placeholder-zinc-300 focus:outline-none dark:text-zinc-300"
+                        />
+                        <span class="shrink-0 text-xs text-zinc-400">{{ $unit }}</span>
                     </div>
+                    @error('offsetValue')
+                        <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p>
+                    @enderror
                 </div>
 
                 {{-- ── Spot Colour ────────────────────────── --}}
@@ -556,14 +679,153 @@ new #[Title('New Job')] class extends Component {
                 </div>
 
                 <div class="flex-1"></div>
+{{-- ── Source Artwork ────────────────────── --}}
+                <div>
+                    <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                        Source Artwork
+                    </p>
 
+                    @if($state === 'idle' && !$file)
+                    <div
+                        x-data="{
+                            active: false,
+                            handleDrop(e) {
+                                this.active = false;
+                                const files = e.dataTransfer.files;
+                                if (!files.length) return;
+                                const dt = new DataTransfer();
+                                dt.items.add(files[0]);
+                                this.$refs.picker.files = dt.files;
+                                this.$refs.picker.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        }"
+                        x-on:dragover.prevent="active = true"
+                        x-on:dragleave.prevent="active = false"
+                        x-on:drop.prevent="handleDrop($event)"
+                        :class="{
+                            'border-cutcontour bg-pink-50/60 dark:bg-pink-950/10': active,
+                            'border-zinc-200 dark:border-zinc-700 hover:border-cutcontour hover:bg-zinc-50 dark:hover:bg-zinc-800/50': !active
+                        }"
+                        class="group relative flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-6 text-center transition-all duration-150"
+                        @click="$refs.picker.click()"
+                    >
+                        <input
+                            x-ref="picker"
+                            type="file"
+                            accept=".jpg,.jpeg,.png,.svg,.pdf,.ai"
+                            class="sr-only"
+                            wire:model="file"
+                        />
+
+                        {{-- Livewire upload-in-progress overlay --}}
+                        <div wire:loading wire:target="file"
+                             class="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-xl bg-white/90 dark:bg-zinc-900/90">
+                            <svg class="size-5 animate-spin text-cutcontour" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/>
+                                <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                            <span class="text-xs font-medium text-zinc-500 dark:text-zinc-400">Uploading…</span>
+                        </div>
+
+                        <div class="flex size-9 items-center justify-center rounded-lg bg-zinc-100 transition-colors dark:bg-zinc-800 group-hover:bg-pink-50 dark:group-hover:bg-pink-950/20">
+                            <svg class="size-4 text-zinc-400 transition-colors group-hover:text-cutcontour" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-zinc-700 dark:text-zinc-300">Drag &amp; drop file here</p>
+                            <p class="mt-0.5 text-[10px] text-zinc-400 dark:text-zinc-500">
+                                PNG, JPG, SVG, PDF, AI — up to 100 MB
+                            </p>
+                        </div>
+                    </div>
+
+                    @error('file')
+                        <p class="mt-2 text-xs text-red-500">{{ $message }}</p>
+                    @enderror
+
+                    @else
+                    <div x-data="{ changePicker: null }">
+                        {{-- Hidden input for swapping file while in idle+file state --}}
+                        @if($state === 'idle')
+                        <input
+                            x-ref="changePicker"
+                            type="file"
+                            accept=".jpg,.jpeg,.png,.svg,.pdf,.ai"
+                            class="sr-only"
+                            wire:model="file"
+                        />
+                        @endif
+
+                        <div class="flex items-center gap-2.5 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-800/50">
+                            <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-white shadow-sm ring-1 ring-zinc-200 dark:bg-zinc-700 dark:ring-zinc-600">
+                                <flux:icon icon="document" class="size-4 text-zinc-400" />
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                @if($file)
+                                    <p class="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">{{ $file->getClientOriginalName() }}</p>
+                                    @php try { $fileSizeMb = number_format($file->getSize() / 1048576, 2); } catch (\Throwable $e) { $fileSizeMb = '—'; } @endphp
+                                    <p class="text-[10px] text-zinc-400 dark:text-zinc-500">{{ $fileSizeMb }} MB</p>
+                                @endif
+                            </div>
+                            @if($state === 'idle')
+                                {{-- Change file --}}
+                                <button
+                                    @click="$refs.changePicker.click()"
+                                    class="shrink-0 text-zinc-400 transition-colors hover:text-cutcontour"
+                                    title="Change file"
+                                >
+                                    <svg class="size-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/>
+                                    </svg>
+                                </button>
+                                {{-- Remove file --}}
+                                <button
+                                    wire:click="removeFile"
+                                    class="shrink-0 text-zinc-400 transition-colors hover:text-red-500"
+                                    title="Remove file"
+                                >
+                                    <svg class="size-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            @elseif($state !== 'processing' && $state !== 'uploading')
+                                <button
+                                    wire:click="removeFile"
+                                    class="shrink-0 text-zinc-400 transition-colors hover:text-red-500"
+                                >
+                                    <svg class="size-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            @endif
+                        </div>
+
+                        {{-- Upload progress overlay (shown while Livewire processes the swap) --}}
+                        @if($state === 'idle')
+                        <div wire:loading wire:target="file"
+                             class="mt-2 flex items-center gap-2 rounded-lg bg-zinc-100 px-3 py-2 dark:bg-zinc-800">
+                            <svg class="size-3.5 animate-spin text-cutcontour" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/>
+                                <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                            <span class="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">Uploading…</span>
+                        </div>
+                        @endif
+                    </div>
+
+                    @error('file')
+                        <p class="mt-2 text-xs text-red-500">{{ $message }}</p>
+                    @enderror
+                    @endif
+                </div>
             </div>
 
             {{-- Action buttons — pinned to bottom --}}
             <div class="shrink-0 space-y-2.5 border-t border-zinc-100 p-5 dark:border-zinc-800">
 
                 @if($state === 'completed')
-                    <flux:button variant="primary" icon="arrow-down-tray" class="w-full">
+                    <flux:button wire:click="download" variant="primary" icon="arrow-down-tray" class="w-full">
                         Download PDF
                     </flux:button>
                     <button wire:click="removeFile"
@@ -587,14 +849,24 @@ new #[Title('New Job')] class extends Component {
                     </flux:button>
 
                 @else
-                    <button type="button" disabled
-                        class="w-full cursor-not-allowed rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-2.5 text-sm font-medium text-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-500">
-                        Preview Vector Data
-                    </button>
-                    <button type="button" disabled
-                        class="w-full cursor-not-allowed rounded-xl bg-cutcontour px-4 py-2.5 text-sm font-semibold text-white opacity-40">
-                        Generate Print File
-                    </button>
+                    @if($file)
+                        <button type="button" wire:click="generate" wire:loading.attr="disabled"
+                            class="w-full rounded-xl bg-cutcontour px-4 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 active:opacity-75">
+                            <span wire:loading.remove wire:target="generate">Generate Print File</span>
+                            <span wire:loading wire:target="generate" class="flex items-center justify-center gap-2">
+                                <svg class="size-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/>
+                                    <path class="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Starting…
+                            </span>
+                        </button>
+                    @else
+                        <button type="button" disabled
+                            class="w-full cursor-not-allowed rounded-xl bg-cutcontour px-4 py-2.5 text-sm font-semibold text-white opacity-40">
+                            Generate Print File
+                        </button>
+                    @endif
                 @endif
 
             </div>
