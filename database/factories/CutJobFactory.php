@@ -34,6 +34,7 @@ class CutJobFactory extends Factory
             'file_type' => $ext,
             'width' => fake()->numberBetween(100, 5000),
             'height' => fake()->numberBetween(100, 5000),
+            'unit' => fake()->randomElement(['in', 'cm', 'mm', 'pt', 'px']),
             'status' => 'processing',
             'ai_used' => false,
             'confidence_score' => null,

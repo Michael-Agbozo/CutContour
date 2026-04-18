@@ -65,7 +65,7 @@ test('generate shows safe error message for non-RuntimeException', function () {
     $component->assertSet('state', 'failed');
     // Should NOT expose internal exception details like table names or SQL
     expect($component->get('errorMessage'))->not->toContain('cut_jobs')
-        ->and($component->get('errorMessage'))->toBe('An error occurred during processing. Please try again.');
+        ->and($component->get('errorMessage'))->toBe('Something went wrong while setting up your job. Please try again.');
 });
 
 test('file upload rejects files exceeding max size', function () {
@@ -149,6 +149,9 @@ test('download streams the completed job PDF via Livewire', function () {
     $job = CutJob::factory()->for($user)->completed()->create([
         'output_path' => 'users/'.$user->id.'/jobs/test123/output.pdf',
         'job_name' => 'my-poster',
+        'width' => 3000,
+        'height' => 3000,
+        'unit' => 'cm',
     ]);
 
     Storage::put($job->output_path, 'fake-pdf-content');
@@ -157,5 +160,42 @@ test('download streams the completed job PDF via Livewire', function () {
         ->test('pages::jobs.create')
         ->set('completedJobId', $job->id)
         ->call('download')
-        ->assertFileDownloaded('my-poster.pdf');
+        ->assertFileDownloaded('my-poster_25.4cmh_25.4cmw.pdf');
+});
+
+test('download filename uses Cut{N}-untitled when no job name is set', function () {
+    $user = User::factory()->create();
+
+    // First unnamed job
+    $job1 = CutJob::factory()->for($user)->completed()->create([
+        'job_name' => null,
+        'width' => 3000,
+        'height' => 1500,
+        'unit' => 'in',
+    ]);
+
+    expect($job1->downloadFilename())->toBe('Cut1-untitled_5inh_10inw.pdf');
+
+    // Second unnamed job
+    $job2 = CutJob::factory()->for($user)->completed()->create([
+        'job_name' => null,
+        'width' => 1500,
+        'height' => 3000,
+        'unit' => 'mm',
+    ]);
+
+    expect($job2->downloadFilename())->toBe('Cut2-untitled_254mmh_127mmw.pdf');
+});
+
+test('download filename includes dimensions in user-selected unit', function () {
+    $user = User::factory()->create();
+
+    $job = CutJob::factory()->for($user)->completed()->create([
+        'job_name' => 'Logo Design',
+        'width' => 9000,
+        'height' => 6000,
+        'unit' => 'cm',
+    ]);
+
+    expect($job->downloadFilename())->toBe('Logo Design_50.8cmh_76.2cmw.pdf');
 });
