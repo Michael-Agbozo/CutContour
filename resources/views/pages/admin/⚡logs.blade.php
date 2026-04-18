@@ -189,11 +189,36 @@ new #[Title('Error Logs — Admin')] class extends Component {
                     <option value="{{ $lvl }}">{{ ucfirst($lvl) }}</option>
                 @endforeach
             </flux:select>
-            <flux:button wire:click="clearLog" wire:confirm="Are you sure? This will permanently clear the log file." variant="ghost" size="sm" icon="trash" class="text-red-500">
-                Clear
-            </flux:button>
+            <flux:modal.trigger name="confirm-log-clear">
+                <flux:button variant="ghost" size="sm" icon="trash" class="text-red-500">
+                    Clear
+                </flux:button>
+            </flux:modal.trigger>
         </div>
     </div>
+
+    <flux:modal name="confirm-log-clear" class="max-w-md">
+        <div class="space-y-4">
+            <div>
+                <flux:heading size="lg">Clear error logs?</flux:heading>
+                <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+                    This will permanently clear the current log file. This action cannot be undone.
+                </flux:text>
+            </div>
+
+            <div class="flex justify-end gap-2">
+                <flux:modal.close>
+                    <flux:button variant="filled">Cancel</flux:button>
+                </flux:modal.close>
+
+                <flux:modal.close>
+                    <flux:button wire:click="clearLog" variant="danger" icon="trash">
+                        Clear log file
+                    </flux:button>
+                </flux:modal.close>
+            </div>
+        </div>
+    </flux:modal>
 
     {{-- Log entries --}}
     @if($this->entries->isEmpty())
