@@ -65,7 +65,7 @@ class CutJob extends Model
     }
 
     /** All jobs that haven't been marked as expired (i.e. still visible to the user). */
-    public function scopePending(Builder $query): void
+    public function scopeVisible(Builder $query): void
     {
         $query->whereNotIn('status', ['expired']);
     }

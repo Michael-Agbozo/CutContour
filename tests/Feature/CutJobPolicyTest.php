@@ -66,3 +66,15 @@ test('user cannot delete another users job', function () {
 
     expect($user->can('delete', $job))->toBeFalse();
 });
+
+test('visible scope excludes expired jobs', function () {
+    $user = User::factory()->create();
+    CutJob::factory()->for($user)->create(['status' => 'processing']);
+    CutJob::factory()->for($user)->completed()->create();
+    CutJob::factory()->for($user)->expired()->create();
+
+    $visible = CutJob::visible()->get();
+
+    expect($visible)->toHaveCount(2)
+        ->and($visible->pluck('status')->toArray())->not->toContain('expired');
+});
