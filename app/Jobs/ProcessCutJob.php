@@ -145,13 +145,13 @@ class ProcessCutJob implements ShouldQueue
 
             $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
 
-            $this->cutJob->update([
+            $this->cutJob->forceFill([
                 'status' => 'completed',
                 'output_path' => $relativeOutputPath,
                 'ai_used' => $useAi && ! $aiFallback,
                 'confidence_score' => $confidence['score'],
                 'processing_duration_ms' => $durationMs,
-            ]);
+            ])->save();
 
             Log::info('ProcessCutJob: completed', [
                 'job_id' => $jobId,
@@ -174,10 +174,10 @@ class ProcessCutJob implements ShouldQueue
 
             // Only record the error; status stays 'processing' until all retries are exhausted.
             // The failed() method sets status='failed' after the final attempt.
-            $this->cutJob->updateQuietly([
+            $this->cutJob->forceFill([
                 'error_message' => $e->getMessage(),
                 'processing_duration_ms' => $durationMs,
-            ]);
+            ])->saveQuietly();
 
             throw $e;
         }
@@ -191,10 +191,10 @@ class ProcessCutJob implements ShouldQueue
         ]);
 
         // Ensure the job record reflects failure even if handle() update failed
-        $this->cutJob->updateQuietly([
+        $this->cutJob->forceFill([
             'status' => 'failed',
             'error_message' => $exception->getMessage(),
-        ]);
+        ])->saveQuietly();
 
         $this->cutJob->user->notify(new CutJobNotification($this->cutJob, 'failed'));
     }
