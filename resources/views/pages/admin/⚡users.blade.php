@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
@@ -47,6 +48,8 @@ new #[Title('Users — Admin')] class extends Component {
 
     public function toggleAdmin(int $userId): void
     {
+        Gate::authorize('manage-users');
+
         $user = User::find($userId);
 
         if (! $user || $user->id === auth()->id()) {
