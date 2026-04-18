@@ -1,7 +1,10 @@
 <?php
 
 use App\Models\User;
+use App\Notifications\EmailVerificationCodeNotification;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Notification;
 use Laravel\Fortify\Features;
 use Livewire\Livewire;
 
@@ -21,17 +24,30 @@ test('security settings page can be rendered', function () {
         ->withSession(['auth.password_confirmed_at' => time()])
         ->get(route('security.edit'))
         ->assertOk()
-        ->assertSee('Two-factor authentication')
+        ->assertSee('Password')
+        ->assertSee('Email')
+        ->assertSee('Passkeys')
+        ->assertSee('Two-factor auth')
         ->assertSee('Enable 2FA');
 });
 
-test('security settings page requires password confirmation when enabled', function () {
+test('unverified users can access security settings page', function () {
+    $user = User::factory()->unverified()->create();
+
+    $this->actingAs($user)
+        ->withSession(['auth.password_confirmed_at' => time()])
+        ->get(route('security.edit'))
+        ->assertOk()
+        ->assertSee('Send code');
+});
+
+test('security settings page is accessible without password confirmation', function () {
     $user = User::factory()->create();
 
-    $response = $this->actingAs($user)
-        ->get(route('security.edit'));
-
-    $response->assertRedirect(route('password.confirm'));
+    $this->actingAs($user)
+        ->get(route('security.edit'))
+        ->assertOk()
+        ->assertSee('Password');
 });
 
 test('security settings page renders without two factor when feature is disabled', function () {
@@ -43,8 +59,8 @@ test('security settings page renders without two factor when feature is disabled
         ->withSession(['auth.password_confirmed_at' => time()])
         ->get(route('security.edit'))
         ->assertOk()
-        ->assertSee('Update password')
-        ->assertDontSee('Two-factor authentication');
+        ->assertSee('Password')
+        ->assertDontSee('Two-factor auth');
 });
 
 test('two factor authentication disabled when confirmation abandoned between requests', function () {
@@ -101,4 +117,57 @@ test('correct password must be provided to update password', function () {
         ->call('updatePassword');
 
     $response->assertHasErrors(['current_password']);
+});
+
+test('email verification code can be requested from security settings', function () {
+    Notification::fake();
+
+    $user = User::factory()->unverified()->create();
+
+    $this->actingAs($user);
+
+    Livewire::test('pages::settings.security')
+        ->call('sendEmailVerificationCode')
+        ->assertHasNoErrors();
+
+    Notification::assertSentTo($user, EmailVerificationCodeNotification::class, function ($notification) use ($user) {
+        return Cache::get('email-verification-code:'.$user->id) === hash('sha256', $notification->code)
+            && strlen($notification->code) === 6;
+    });
+});
+
+test('email can be verified with a valid emailed code from security settings', function () {
+    Notification::fake();
+
+    $user = User::factory()->unverified()->create();
+
+    $this->actingAs($user);
+
+    Livewire::test('pages::settings.security')
+        ->call('sendEmailVerificationCode');
+
+    Notification::assertSentTo($user, EmailVerificationCodeNotification::class, function ($notification) use ($user) {
+        Livewire::test('pages::settings.security')
+            ->set('email_verification_code', $notification->code)
+            ->call('verifyEmailCode')
+            ->assertHasNoErrors();
+
+        return $user->fresh()->hasVerifiedEmail()
+            && Cache::get('email-verification-code:'.$user->id) === null;
+    });
+});
+
+test('invalid email verification code is rejected', function () {
+    $user = User::factory()->unverified()->create();
+
+    Cache::put('email-verification-code:'.$user->id, hash('sha256', '123456'), now()->addMinutes(10));
+
+    $this->actingAs($user);
+
+    Livewire::test('pages::settings.security')
+        ->set('email_verification_code', '654321')
+        ->call('verifyEmailCode')
+        ->assertHasErrors(['email_verification_code']);
+
+    expect($user->fresh()->hasVerifiedEmail())->toBeFalse();
 });
