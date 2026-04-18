@@ -54,10 +54,7 @@ new #[Title('Admin Dashboard')] class extends Component {
 <div class="flex flex-col gap-6 p-6">
 
     {{-- Header --}}
-    <div>
-        <h1 class="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Admin Dashboard</h1>
-        <p class="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">System overview and health metrics.</p>
-    </div>
+    <x-page-header title="Admin Dashboard" description="System overview and health metrics." />
 
     {{-- Stats grid --}}
     <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
@@ -75,47 +72,31 @@ new #[Title('Admin Dashboard')] class extends Component {
         @endphp
 
         @foreach($cards as $card)
-            <div class="rounded-xl border border-zinc-200 bg-white px-4 py-4 dark:border-zinc-700 dark:bg-zinc-900">
-                <div class="flex items-center gap-3">
-                    <div class="flex size-9 items-center justify-center rounded-lg {{ $card['bg'] }}">
-                        <flux:icon :name="$card['icon']" class="size-4.5 {{ $card['color'] }}" />
-                    </div>
-                    <div>
-                        <p class="text-lg font-semibold text-zinc-900 dark:text-zinc-100">{{ number_format($card['value']) }}</p>
-                        <p class="text-[11px] text-zinc-500 dark:text-zinc-400">{{ $card['label'] }}</p>
-                    </div>
-                </div>
-            </div>
+            <x-stat-card :label="$card['label']" :value="number_format($card['value'])" :icon="$card['icon']" :icon-color="$card['color']" :icon-bg="$card['bg']" />
         @endforeach
     </div>
 
     {{-- Pipeline metrics --}}
     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="rounded-xl border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-700 dark:bg-zinc-900">
-            <p class="text-[10px] font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">Failure Rate</p>
-            <p class="mt-1 text-2xl font-bold {{ $this->failureRate > 10 ? 'text-red-500' : 'text-emerald-500' }}">
-                {{ $this->failureRate }}%
-            </p>
-        </div>
-        <div class="rounded-xl border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-700 dark:bg-zinc-900">
-            <p class="text-[10px] font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">Avg Processing Time</p>
-            <p class="mt-1 text-2xl font-bold text-zinc-900 dark:text-zinc-100">
-                {{ $this->stats['avg_duration_ms'] > 0 ? number_format($this->stats['avg_duration_ms'] / 1000, 1) . 's' : '—' }}
-            </p>
-        </div>
-        <div class="rounded-xl border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-700 dark:bg-zinc-900">
-            <p class="text-[10px] font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">AI Path Usage</p>
-            <p class="mt-1 text-2xl font-bold text-zinc-900 dark:text-zinc-100">
+        <x-stat-card
+            label="Failure Rate"
+            :value="$this->failureRate . '%'"
+            :value-class="$this->failureRate > 10 ? 'text-red-500' : 'text-emerald-500'"
+        />
+        <x-stat-card
+            label="Avg Processing Time"
+            :value="$this->stats['avg_duration_ms'] > 0 ? number_format($this->stats['avg_duration_ms'] / 1000, 1) . 's' : '—'"
+        />
+        <x-stat-card label="AI Path Usage">
+            <x-slot:value>
                 {{ $this->stats['ai_used'] }}
                 <span class="text-sm font-normal text-zinc-400">/ {{ $this->stats['ai_used'] + $this->stats['fast_path'] }}</span>
-            </p>
-        </div>
-        <div class="rounded-xl border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-700 dark:bg-zinc-900">
-            <p class="text-[10px] font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">Avg Confidence</p>
-            <p class="mt-1 text-2xl font-bold text-zinc-900 dark:text-zinc-100">
-                {{ $this->stats['avg_confidence'] > 0 ? $this->stats['avg_confidence'] : '—' }}
-            </p>
-        </div>
+            </x-slot:value>
+        </x-stat-card>
+        <x-stat-card
+            label="Avg Confidence"
+            :value="$this->stats['avg_confidence'] > 0 ? $this->stats['avg_confidence'] : '—'"
+        />
     </div>
 
     {{-- Recent failures --}}

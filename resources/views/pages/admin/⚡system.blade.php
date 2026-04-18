@@ -78,13 +78,17 @@ new #[Title('System — Admin')] class extends Component {
         $this->cleanupRunning = true;
         $this->cleanupOutput = '';
 
-        Artisan::call('cutjob:cleanup');
-        $this->cleanupOutput = Artisan::output();
-
-        $this->cleanupRunning = false;
-        unset($this->storageStats);
-
-        Flux::toast('Cleanup completed successfully.');
+        try {
+            Artisan::call('cutjob:cleanup');
+            $this->cleanupOutput = Artisan::output();
+            Flux::toast(variant: 'success', text: 'Cleanup completed successfully.');
+        } catch (\Throwable $e) {
+            $this->cleanupOutput = $e->getMessage();
+            Flux::toast(variant: 'danger', text: 'Cleanup failed: ' . $e->getMessage());
+        } finally {
+            $this->cleanupRunning = false;
+            unset($this->storageStats);
+        }
     }
 
     public function flushFailedQueueJobs(): void
@@ -93,7 +97,7 @@ new #[Title('System — Admin')] class extends Component {
 
         unset($this->queueStats);
 
-        Flux::toast('Failed queue jobs flushed.');
+        Flux::toast(variant: 'success', text: 'Failed queue jobs flushed.');
     }
 };
 
@@ -102,15 +106,7 @@ new #[Title('System — Admin')] class extends Component {
 <div class="flex flex-col gap-6 p-6">
 
     {{-- Header --}}
-    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-            <h1 class="text-xl font-semibold text-zinc-900 dark:text-zinc-100">System</h1>
-            <p class="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">Pipeline health, storage cleanup, and configuration.</p>
-        </div>
-        <flux:button variant="ghost" size="sm" :href="route('admin.dashboard')" wire:navigate icon="arrow-left">
-            Back to Dashboard
-        </flux:button>
-    </div>
+    <x-page-header title="System" description="Pipeline health, storage cleanup, and configuration." :back-route="route('admin.dashboard')" />
 
     {{-- ── Pipeline Health ─────────────────────────────────────── --}}
     <div>
@@ -141,16 +137,12 @@ new #[Title('System — Admin')] class extends Component {
     <div>
         <h2 class="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-100">Queue Status</h2>
         <div class="grid gap-4 sm:grid-cols-3">
-            <div class="rounded-xl border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-700 dark:bg-zinc-900">
-                <p class="text-[10px] font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">Pending Jobs</p>
-                <p class="mt-1 text-2xl font-bold text-zinc-900 dark:text-zinc-100">{{ $this->queueStats['pending'] }}</p>
-            </div>
-            <div class="rounded-xl border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-700 dark:bg-zinc-900">
-                <p class="text-[10px] font-semibold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">Failed Queue Jobs</p>
-                <p class="mt-1 text-2xl font-bold {{ $this->queueStats['failed'] > 0 ? 'text-red-500' : 'text-zinc-900 dark:text-zinc-100' }}">
-                    {{ $this->queueStats['failed'] }}
-                </p>
-            </div>
+            <x-stat-card label="Pending Jobs" :value="$this->queueStats['pending']" />
+            <x-stat-card
+                label="Failed Queue Jobs"
+                :value="$this->queueStats['failed']"
+                :value-class="$this->queueStats['failed'] > 0 ? 'text-red-500' : 'text-zinc-900 dark:text-zinc-100'"
+            />
             <div class="flex items-end rounded-xl border border-zinc-200 bg-white px-5 py-4 dark:border-zinc-700 dark:bg-zinc-900">
                 @if($this->queueStats['failed'] > 0)
                     <flux:button wire:click="flushFailedQueueJobs" variant="ghost" size="sm" icon="trash" class="text-red-500">

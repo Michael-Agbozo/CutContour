@@ -82,15 +82,7 @@ new #[Title('All Jobs — Admin')] class extends Component {
 <div class="flex flex-col gap-6 p-6">
 
     {{-- Header --}}
-    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-            <h1 class="text-xl font-semibold text-zinc-900 dark:text-zinc-100">All Jobs</h1>
-            <p class="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">Browse and inspect all user jobs.</p>
-        </div>
-        <flux:button variant="ghost" size="sm" :href="route('admin.dashboard')" wire:navigate icon="arrow-left">
-            Back to Dashboard
-        </flux:button>
-    </div>
+    <x-page-header title="All Jobs" description="Browse and inspect all user jobs." :back-route="route('admin.dashboard')" />
 
     {{-- Filters --}}
     <div class="flex flex-wrap items-center gap-3">
@@ -156,18 +148,7 @@ new #[Title('All Jobs — Admin')] class extends Component {
                             {{ $job->user?->name ?? 'Deleted' }}
                         </td>
                         <td class="px-4 py-3">
-                            @php
-                                $badge = match($job->status) {
-                                    'completed'  => 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
-                                    'processing' => 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-                                    'failed'     => 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
-                                    'expired'    => 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-500',
-                                    default      => 'bg-zinc-100 text-zinc-500',
-                                };
-                            @endphp
-                            <span class="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold {{ $badge }}">
-                                {{ ucfirst($job->status) }}
-                            </span>
+                            <x-status-badge :status="$job->status" />
                         </td>
                         <td class="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-400">
                             {{ $job->ai_used ? 'AI' : 'Fast' }}
@@ -182,27 +163,7 @@ new #[Title('All Jobs — Admin')] class extends Component {
                             {{ $job->created_at->diffForHumans() }}
                         </td>
                         <td class="px-4 py-3">
-                            <div x-data="{ confirm: false }" class="flex items-center gap-1">
-                                <button
-                                    x-show="!confirm"
-                                    @click="confirm = true"
-                                    class="rounded p-1 text-zinc-300 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 group-hover:opacity-100 dark:text-zinc-600 dark:hover:bg-red-950/30 dark:hover:text-red-400"
-                                    title="Delete"
-                                >
-                                    <flux:icon name="trash" class="size-3.5" />
-                                </button>
-                                <div x-show="confirm" x-cloak class="flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-2 py-1 shadow-sm dark:border-red-900/40 dark:bg-zinc-900">
-                                    <span class="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">Sure?</span>
-                                    <button
-                                        @click="$wire.deleteJob('{{ $job->id }}'); confirm = false"
-                                        class="rounded px-1.5 py-0.5 text-[10px] font-semibold text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
-                                    >Yes</button>
-                                    <button
-                                        @click="confirm = false"
-                                        class="rounded px-1.5 py-0.5 text-[10px] font-semibold text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                                    >No</button>
-                                </div>
-                            </div>
+                            <x-confirm-action action="$wire.deleteJob('{{ $job->id }}')" />
                         </td>
                     </tr>
                 @empty
