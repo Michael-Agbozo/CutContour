@@ -150,6 +150,18 @@ new #[Title('New Job')] class extends Component {
             'offsetValue.gte'       => 'Offset must be 0 or greater.',
         ]);
 
+        $maxPx = 4096;
+        if ($this->unitToPx($this->targetWidth) > $maxPx) {
+            $this->addError('targetWidth', "Width exceeds the maximum of {$maxPx} px.");
+
+            return;
+        }
+        if ($this->unitToPx($this->targetHeight) > $maxPx) {
+            $this->addError('targetHeight', "Height exceeds the maximum of {$maxPx} px.");
+
+            return;
+        }
+
         $this->state = 'processing';
         $this->resetSteps();
 
