@@ -11,27 +11,42 @@ use App\Services\PdfService;
 use App\Services\VectorizationService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use RuntimeException;
 use Throwable;
 
 /**
  * Orchestrates the full CutContour processing pipeline for a single job (PRD §7, §10).
  *
- * Pipeline:
+ * Pipeline steps (persisted to `cut_jobs.pipeline_step` so the UI can render live progress):
  *   1. Preprocess (ImageMagick)
  *   2. Confidence check → Fast or AI-Enhanced path
  *   3. [AI path] Subject isolation → normalise output
  *   4. Vectorise (Potrace)
  *   5. Assemble PDF (CutContour spot colour layer)
- *   6. Update CutJob record
  *
- * Failure behaviour: any unhandled exception marks the job as `failed` with the
- * error message stored for admin inspection. No silent failures.
+ * Idempotency: entering handle() locks the row and no-ops if the job already
+ * carries a completed `output_path`, so a redelivered message never double-
+ * charges AI or overwrites output.
  */
 class ProcessCutJob implements ShouldQueue
 {
     use Queueable;
+
+    public const STEP_PREPROCESS = 1;
+
+    public const STEP_CONFIDENCE = 2;
+
+    public const STEP_AI = 3;
+
+    public const STEP_MASK = 4;
+
+    public const STEP_VECTORIZE = 5;
+
+    public const STEP_ASSEMBLE = 6;
 
     /** Abort the job if it runs longer than 5 minutes. */
     public int $timeout = 300;
@@ -41,6 +56,9 @@ class ProcessCutJob implements ShouldQueue
 
     /** Fail the job immediately without re-queuing. */
     public int $maxExceptions = 1;
+
+    /** Set inside handle() to suppress the duplicate notification from failed(). */
+    private bool $failureNotified = false;
 
     public function __construct(
         public readonly CutJob $cutJob,
@@ -60,6 +78,30 @@ class ProcessCutJob implements ShouldQueue
         $jobId = $this->cutJob->id;
         $userId = $this->cutJob->user_id;
 
+        // Idempotency guard: a redelivered message must not re-run a completed job.
+        // Lock the row and re-read status inside a short transaction.
+        $shouldProcess = DB::transaction(function () {
+            $fresh = CutJob::whereKey($this->cutJob->id)->lockForUpdate()->first();
+
+            if ($fresh === null || $fresh->status === 'completed' || $fresh->output_path !== null) {
+                return false;
+            }
+
+            $fresh->forceFill([
+                'status' => 'processing',
+                'pipeline_step' => 0,
+                'error_message' => null,
+            ])->save();
+
+            return true;
+        });
+
+        if (! $shouldProcess) {
+            Log::info('ProcessCutJob: skipped (already completed or missing)', ['job_id' => $jobId]);
+
+            return;
+        }
+
         Log::info('ProcessCutJob: started', [
             'job_id' => $jobId,
             'file_type' => $this->cutJob->file_type,
@@ -71,6 +113,7 @@ class ProcessCutJob implements ShouldQueue
 
         try {
             // ── Step 1: Preprocess ────────────────────────────────────────────────
+            $this->recordStep(self::STEP_PREPROCESS);
             $preprocessed = $imageProcessor->preprocess(
                 $sourcePath,
                 $workDir,
@@ -78,13 +121,8 @@ class ProcessCutJob implements ShouldQueue
                 $this->targetHeightPx > 0 ? $this->targetHeightPx : null,
             );
 
-            // Update dimensions now that we know them
-            $this->cutJob->update([
-                'width' => $preprocessed['width'],
-                'height' => $preprocessed['height'],
-            ]);
-
             // ── Step 2: Confidence check ──────────────────────────────────────────
+            $this->recordStep(self::STEP_CONFIDENCE);
             $confidence = $confidenceService->evaluate($preprocessed['path'], $this->cutJob->file_type);
             $useAi = $confidence['useAi'];
             $aiFallback = false;
@@ -99,6 +137,7 @@ class ProcessCutJob implements ShouldQueue
             $maskPath = null;
 
             if ($useAi) {
+                $this->recordStep(self::STEP_AI);
                 $aiResult = $aiService->analyze($preprocessed['path'], $workDir);
 
                 if ($aiResult !== null) {
@@ -107,7 +146,6 @@ class ProcessCutJob implements ShouldQueue
                         'mask' => $imageProcessor->normalizeMask($aiResult['path'], $workDir),
                     };
                 } else {
-                    // AI failed — fall back to Fast Path silently (PRD §9)
                     $aiFallback = true;
                     $useAi = false;
                     Log::warning('ProcessCutJob: AI fallback activated', ['job_id' => $jobId]);
@@ -115,19 +153,21 @@ class ProcessCutJob implements ShouldQueue
             }
 
             // ── Step 4: Fast Path mask (no AI or AI fallback) ────────────────────
+            $this->recordStep(self::STEP_MASK);
             if ($maskPath === null) {
                 $maskPath = $imageProcessor->generateMask($preprocessed['path'], $workDir);
             }
 
-            // Apply contour offset dilation (outward expansion of subject boundary)
             if ($this->offsetPx > 0) {
                 $maskPath = $imageProcessor->applyOffset($maskPath, $workDir, $this->offsetPx);
             }
 
             // ── Step 5: Vectorise ─────────────────────────────────────────────────
+            $this->recordStep(self::STEP_VECTORIZE);
             $svgPath = $vectorizer->vectorize($maskPath, $workDir);
 
             // ── Step 6: Assemble PDF ──────────────────────────────────────────────
+            $this->recordStep(self::STEP_ASSEMBLE);
             $absoluteOutputPath = $pdfService->assemble(
                 originalPath: $sourcePath,
                 svgPath: $svgPath,
@@ -137,7 +177,6 @@ class ProcessCutJob implements ShouldQueue
                 height: $preprocessed['height'],
             );
 
-            // Derive the storage-relative path from the absolute path returned by assemble()
             $relativeOutputPath = ltrim(
                 str_replace(Storage::path(''), '', $absoluteOutputPath),
                 '/\\',
@@ -148,9 +187,12 @@ class ProcessCutJob implements ShouldQueue
             $this->cutJob->forceFill([
                 'status' => 'completed',
                 'output_path' => $relativeOutputPath,
+                'width' => $preprocessed['width'],
+                'height' => $preprocessed['height'],
                 'ai_used' => $useAi && ! $aiFallback,
                 'confidence_score' => $confidence['score'],
                 'processing_duration_ms' => $durationMs,
+                'pipeline_step' => self::STEP_ASSEMBLE,
             ])->save();
 
             Log::info('ProcessCutJob: completed', [
@@ -162,44 +204,89 @@ class ProcessCutJob implements ShouldQueue
             ]);
 
             $this->cutJob->user->notify(new CutJobNotification($this->cutJob, 'completed'));
-
         } catch (Throwable $e) {
             $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
 
             Log::error('ProcessCutJob: failed', [
                 'job_id' => $jobId,
                 'error' => $e->getMessage(),
+                'trace_first' => $e->getFile().':'.$e->getLine(),
                 'duration_ms' => $durationMs,
             ]);
 
-            // Only record the error; status stays 'processing' until all retries are exhausted.
-            // The failed() method sets status='failed' after the final attempt.
             $this->cutJob->forceFill([
-                'error_message' => $e->getMessage(),
+                'status' => 'failed',
+                'error_message' => $this->userSafeMessage($e),
+                'error_detail' => $e->getMessage(),
                 'processing_duration_ms' => $durationMs,
             ])->saveQuietly();
 
             $this->cutJob->user->notify(new CutJobNotification($this->cutJob, 'failed'));
+            $this->failureNotified = true;
 
-            // Do not rethrow — we handle failure ourselves to avoid "attempted too many times".
-            $this->fail($e);
+            // Rethrow so the queue marks the job failed and invokes failed().
+            throw $e;
+        } finally {
+            $this->cleanupWorkDir($workDir);
         }
     }
 
     public function failed(Throwable $exception): void
     {
-        Log::error('ProcessCutJob: exhausted all retries', [
+        Log::error('ProcessCutJob: queue failure hook', [
             'job_id' => $this->cutJob->id,
             'error' => $exception->getMessage(),
         ]);
 
-        // Ensure the job record reflects failure even if handle() update failed
+        if ($this->failureNotified) {
+            return;
+        }
+
+        // handle() never ran (worker crash, deserialization error) — ensure the
+        // record is failed and the user is told exactly once.
         $this->cutJob->forceFill([
             'status' => 'failed',
-            'error_message' => $exception->getMessage(),
+            'error_message' => $this->userSafeMessage($exception),
+            'error_detail' => $exception->getMessage(),
         ])->saveQuietly();
 
         $this->cutJob->user->notify(new CutJobNotification($this->cutJob, 'failed'));
+    }
+
+    /**
+     * User-facing error message — never expose internal paths or tool output.
+     * Full detail is captured in `error_detail` for admin inspection.
+     */
+    private function userSafeMessage(Throwable $e): string
+    {
+        if ($e instanceof RuntimeException && str_contains($e->getMessage(), 'AI ')) {
+            return 'AI analysis was unavailable. Please try again or upload a different file.';
+        }
+
+        if ($e instanceof RuntimeException && str_contains($e->getMessage(), 'too large')) {
+            return 'The file was too large to process. Please upload a smaller file.';
+        }
+
+        return 'Processing failed — please try a different file. Our team has been notified.';
+    }
+
+    private function recordStep(int $step): void
+    {
+        $this->cutJob->forceFill(['pipeline_step' => $step])->saveQuietly();
+    }
+
+    private function cleanupWorkDir(string $workDir): void
+    {
+        if (is_dir($workDir)) {
+            try {
+                File::deleteDirectory($workDir);
+            } catch (Throwable $e) {
+                Log::warning('ProcessCutJob: failed to clean work dir', [
+                    'work_dir' => $workDir,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**
@@ -225,7 +312,7 @@ class ProcessCutJob implements ShouldQueue
         ), $output, $code);
 
         if ($code !== 0) {
-            throw new \RuntimeException('AI SVG rasterisation failed: '.implode(' ', $output));
+            throw new RuntimeException('AI SVG rasterisation failed: '.implode(' ', $output));
         }
 
         return $imageProcessor->normalizeMask($rasterPath, $workDir);

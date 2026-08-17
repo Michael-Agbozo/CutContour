@@ -10,19 +10,38 @@ new #[Title('Admin Dashboard')] class extends Component {
     #[Computed]
     public function stats(): array
     {
+        $todayStart = now()->startOfDay();
+        $monthStart = now()->startOfMonth();
+
+        // Single aggregate query replaces 11 separate COUNTs / AVGs.
+        // Sargable date comparisons keep the created_at index in play.
+        $row = CutJob::query()
+            ->selectRaw('COUNT(*) AS total_jobs')
+            ->selectRaw('SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS jobs_today', [$todayStart])
+            ->selectRaw('SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS jobs_this_month', [$monthStart])
+            ->selectRaw("SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed")
+            ->selectRaw("SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed")
+            ->selectRaw("SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing")
+            ->selectRaw("SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END) AS expired")
+            ->selectRaw('SUM(CASE WHEN ai_used = 1 THEN 1 ELSE 0 END) AS ai_used')
+            ->selectRaw("SUM(CASE WHEN ai_used = 0 AND status IN ('completed', 'failed') THEN 1 ELSE 0 END) AS fast_path")
+            ->selectRaw("AVG(CASE WHEN status = 'completed' THEN processing_duration_ms END) AS avg_duration_ms")
+            ->selectRaw('AVG(confidence_score) AS avg_confidence')
+            ->first();
+
         return [
             'total_users' => User::count(),
-            'total_jobs' => CutJob::count(),
-            'jobs_today' => CutJob::whereDate('created_at', today())->count(),
-            'jobs_this_month' => CutJob::whereMonth('created_at', now()->month)->whereYear('created_at', now()->year)->count(),
-            'completed' => CutJob::where('status', 'completed')->count(),
-            'failed' => CutJob::where('status', 'failed')->count(),
-            'processing' => CutJob::where('status', 'processing')->count(),
-            'expired' => CutJob::where('status', 'expired')->count(),
-            'ai_used' => CutJob::where('ai_used', true)->count(),
-            'fast_path' => CutJob::where('ai_used', false)->whereIn('status', ['completed', 'failed'])->count(),
-            'avg_duration_ms' => (int) CutJob::where('status', 'completed')->avg('processing_duration_ms'),
-            'avg_confidence' => round((float) CutJob::whereNotNull('confidence_score')->avg('confidence_score'), 2),
+            'total_jobs' => (int) ($row->total_jobs ?? 0),
+            'jobs_today' => (int) ($row->jobs_today ?? 0),
+            'jobs_this_month' => (int) ($row->jobs_this_month ?? 0),
+            'completed' => (int) ($row->completed ?? 0),
+            'failed' => (int) ($row->failed ?? 0),
+            'processing' => (int) ($row->processing ?? 0),
+            'expired' => (int) ($row->expired ?? 0),
+            'ai_used' => (int) ($row->ai_used ?? 0),
+            'fast_path' => (int) ($row->fast_path ?? 0),
+            'avg_duration_ms' => (int) ($row->avg_duration_ms ?? 0),
+            'avg_confidence' => round((float) ($row->avg_confidence ?? 0), 2),
         ];
     }
 
@@ -39,13 +58,15 @@ new #[Title('Admin Dashboard')] class extends Component {
     #[Computed]
     public function failureRate(): float
     {
-        $total = CutJob::whereIn('status', ['completed', 'failed'])->count();
+        $completed = $this->stats['completed'];
+        $failed = $this->stats['failed'];
+        $total = $completed + $failed;
 
         if ($total === 0) {
             return 0;
         }
 
-        return round(CutJob::where('status', 'failed')->count() / $total * 100, 1);
+        return round($failed / $total * 100, 1);
     }
 };
 

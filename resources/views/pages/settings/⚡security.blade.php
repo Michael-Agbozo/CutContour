@@ -6,6 +6,7 @@ use Flux\Flux;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
 use Laravel\Fortify\Actions\DisableTwoFactorAuthentication;
 use Laravel\Fortify\Features;
@@ -84,6 +85,16 @@ new #[Title('Security settings')] class extends Component {
             return;
         }
 
+        $key = 'email-verification-send:'.$user->getAuthIdentifier();
+
+        if (RateLimiter::tooManyAttempts($key, 3)) {
+            throw ValidationException::withMessages([
+                'email_verification_code' => __('Too many verification emails sent. Please try again in :seconds seconds.', ['seconds' => RateLimiter::availableIn($key)]),
+            ]);
+        }
+
+        RateLimiter::hit($key, 3600);
+
         $code = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 
         Cache::put($this->emailVerificationCacheKey($user->getAuthIdentifier()), hash('sha256', $code), now()->addMinutes(10));
@@ -106,6 +117,14 @@ new #[Title('Security settings')] class extends Component {
             return;
         }
 
+        $key = 'email-verification-verify:'.$user->getAuthIdentifier();
+
+        if (RateLimiter::tooManyAttempts($key, 5)) {
+            throw ValidationException::withMessages([
+                'email_verification_code' => __('Too many attempts. Please try again in :seconds seconds.', ['seconds' => RateLimiter::availableIn($key)]),
+            ]);
+        }
+
         $this->validate([
             'email_verification_code' => ['required', 'digits:6'],
         ]);
@@ -113,10 +132,14 @@ new #[Title('Security settings')] class extends Component {
         $expectedCodeHash = Cache::get($this->emailVerificationCacheKey($user->getAuthIdentifier()));
 
         if (! is_string($expectedCodeHash) || ! hash_equals($expectedCodeHash, hash('sha256', $this->email_verification_code))) {
+            RateLimiter::hit($key, 900);
+
             throw ValidationException::withMessages([
                 'email_verification_code' => __('The verification code is invalid or has expired.'),
             ]);
         }
+
+        RateLimiter::clear($key);
 
         $user->markEmailAsVerified();
 

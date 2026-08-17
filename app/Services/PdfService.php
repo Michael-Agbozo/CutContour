@@ -68,9 +68,10 @@ class PdfService
             escapeshellarg($svgPath),
         ), 'SVG to vector PDF failed (inkscape required)');
 
-        // Step 3: Merge artwork + vector cut path using GhostScript
+        // Step 3: Merge artwork + vector cut path using GhostScript.
+        // -dSAFER sandboxes PostScript file/network operators (CVE-2023-36664 class).
         $this->exec(sprintf(
-            '%s -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile=%s %s %s',
+            '%s -dSAFER -dBATCH -dNOPAUSE -q -sDEVICE=pdfwrite -sOutputFile=%s %s %s',
             escapeshellarg($this->gs),
             escapeshellarg($outputPath),
             escapeshellarg($artworkPdf),

@@ -33,6 +33,21 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->configureDefaults();
         $this->registerPolicies();
+        $this->hardenImageMagick();
+    }
+
+    /**
+     * Point ImageMagick at the app's locked policy.xml so every convert/identify
+     * call — CLI or delegate-triggered — runs with the hardened coder allowlist
+     * (blocks MSL/HTTPS/URL/PS/PDF etc.). See storage/imagemagick/policy.xml.
+     */
+    protected function hardenImageMagick(): void
+    {
+        $policyDir = storage_path('imagemagick');
+
+        if (is_dir($policyDir)) {
+            putenv('MAGICK_CONFIGURE_PATH='.$policyDir);
+        }
     }
 
     protected function registerPolicies(): void

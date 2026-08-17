@@ -18,7 +18,7 @@ class LoginResponse implements LoginResponseContract
 
         if (! $request->wantsJson()) {
             session()->flash('flux_toast', [
-                'text'    => 'Successfully authenticated. Welcome back!',
+                'text' => 'Successfully authenticated. Welcome back!',
                 'variant' => 'success',
             ]);
         }

@@ -236,7 +236,7 @@ test('job passes target dimensions to preprocess', function () {
         ->and($job->height)->toBe(576);
 });
 
-test('job keeps processing status and stores error when pipeline throws', function () {
+test('job is marked failed with a user-safe message and admin detail when pipeline throws', function () {
     $user = User::factory()->create();
     $job = CutJob::factory()->for($user)->create([
         'file_type' => 'png',
@@ -247,19 +247,22 @@ test('job keeps processing status and stores error when pipeline throws', functi
 
     $imageProcessor = Mockery::mock(ImageProcessingService::class);
     $imageProcessor->shouldReceive('preprocess')
-        ->andThrow(new RuntimeException('ImageMagick not found'));
+        ->andThrow(new RuntimeException('ImageMagick not found: /usr/bin/convert missing'));
 
     $confidence = Mockery::mock(ConfidenceService::class);
     $ai = Mockery::mock(AIService::class);
     $vectorizer = Mockery::mock(VectorizationService::class);
     $pdf = Mockery::mock(PdfService::class);
 
-    // handle() no longer throws — it calls $this->fail() internally
-    (new ProcessCutJob($job))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf);
+    try {
+        (new ProcessCutJob($job))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf);
+    } catch (RuntimeException) {
+        // Expected: the job rethrows so the queue records the failure.
+    }
 
     $job->refresh();
 
-    // Status remains processing until retries are exhausted; failed() then marks failed
-    expect($job->status)->toBe('processing')
-        ->and($job->error_message)->toContain('ImageMagick not found');
+    expect($job->status)->toBe('failed')
+        ->and($job->error_message)->not->toContain('/usr/bin/convert') // internal path hidden
+        ->and($job->error_detail)->toContain('ImageMagick not found');
 });

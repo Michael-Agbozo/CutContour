@@ -40,7 +40,7 @@ test('monthly usage respects usage_reset_at', function () {
     ]);
 
     // Reset usage 1 hour ago
-    $user->update(['usage_reset_at' => now()->subHour()]);
+    $user->forceFill(['usage_reset_at' => now()->subHour()])->save();
 
     // Create 1 completed job after the reset
     CutJob::factory()->for($user)->completed()->create([

@@ -2,6 +2,7 @@
 
 use App\Models\CutJob;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Attributes\Computed;
@@ -38,7 +39,7 @@ new #[Title('System — Admin')] class extends Component {
         $results = [];
 
         foreach ($binaries as $name => $path) {
-            $result = Process::run("which {$path} 2>/dev/null");
+            $result = Process::run(['which', $path]);
             $results[$name] = [
                 'path' => $path,
                 'available' => $result->successful(),
@@ -75,6 +76,8 @@ new #[Title('System — Admin')] class extends Component {
 
     public function runCleanup(): void
     {
+        Gate::authorize('manage-system');
+
         $this->cleanupRunning = true;
         $this->cleanupOutput = '';
 
@@ -93,6 +96,8 @@ new #[Title('System — Admin')] class extends Component {
 
     public function flushFailedQueueJobs(): void
     {
+        Gate::authorize('manage-system');
+
         Artisan::call('queue:flush');
 
         unset($this->queueStats);

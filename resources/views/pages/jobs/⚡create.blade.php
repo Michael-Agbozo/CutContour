@@ -3,6 +3,7 @@
 use App\Jobs\ProcessCutJob;
 use App\Models\CutJob;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
@@ -144,6 +145,17 @@ new #[Title('New Job')] class extends Component {
     {
         /** @var \App\Models\User $user */
         $user = auth()->user();
+
+        // Burst rate limit: 3 job creations per minute per user, independent of the monthly quota.
+        $throttleKey = 'cutjob-create:'.$user->id;
+        if (RateLimiter::tooManyAttempts($throttleKey, 3)) {
+            $this->addError('file', __('Too many submissions. Please wait :seconds seconds before trying again.', [
+                'seconds' => RateLimiter::availableIn($throttleKey),
+            ]));
+
+            return;
+        }
+
         $limit = config('cutjob.monthly_job_limit', 10);
 
         $usageQuery = $user->cutJobs()
@@ -195,8 +207,12 @@ new #[Title('New Job')] class extends Component {
 
         $this->state = 'processing';
         $this->resetSteps();
+        $this->steps[0]['done'] = true;
+        $this->steps[1]['active'] = true;
 
         try {
+            RateLimiter::hit($throttleKey, 60);
+
             $ext = strtolower($this->file->getClientOriginalExtension());
 
             $cutJob = CutJob::create([
@@ -218,7 +234,10 @@ new #[Title('New Job')] class extends Component {
                 throw new \RuntimeException('Failed to store uploaded file.');
             }
 
-            $cutJob->update(['file_path' => $storagePath]);
+            $cutJob->forceFill([
+                'file_path' => $storagePath,
+                'file_size_bytes' => $this->file->getSize(),
+            ])->save();
 
             $targetWidthPx = $this->unitToPx($this->targetWidth ?? 0);
             $targetHeightPx = $this->unitToPx($this->targetHeight ?? 0);
@@ -246,12 +265,14 @@ new #[Title('New Job')] class extends Component {
 
         $cutJob = CutJob::select([
             'id', 'status', 'width', 'height', 'output_path',
-            'processing_duration_ms', 'ai_used', 'error_message',
+            'processing_duration_ms', 'ai_used', 'error_message', 'pipeline_step',
         ])->find($this->currentJobId);
 
         if ($cutJob === null) {
             return;
         }
+
+        $this->updateStepsFromPipeline((int) ($cutJob->pipeline_step ?? 0));
 
         if ($cutJob->status === 'completed') {
             $this->outputWidth = $cutJob->width;
@@ -345,6 +366,28 @@ new #[Title('New Job')] class extends Component {
             ['label' => 'Assembling CutContour layer',     'done' => false, 'active' => false],
             ['label' => 'Exporting PDF',                   'done' => false, 'active' => false],
         ];
+    }
+
+    /**
+     * Reflect the worker's persisted `pipeline_step` in the UI steps array.
+     * Steps 1..N are marked done; step N+1 is marked active while running.
+     */
+    private function updateStepsFromPipeline(int $pipelineStep): void
+    {
+        if ($pipelineStep <= 0 || empty($this->steps)) {
+            return;
+        }
+
+        // Upload is always done once processing starts.
+        $this->steps[0]['done'] = true;
+
+        // Map worker step (1..6) → UI step index (offset by upload row).
+        $uiIndex = min($pipelineStep, count($this->steps) - 1);
+
+        for ($i = 1; $i <= $uiIndex; $i++) {
+            $this->steps[$i]['done'] = $i < $uiIndex;
+            $this->steps[$i]['active'] = $i === $uiIndex;
+        }
     }
 };
 

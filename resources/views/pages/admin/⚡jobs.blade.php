@@ -24,6 +24,8 @@ new #[Title('All Jobs — Admin')] class extends Component {
 
     public string $sortDir = 'desc';
 
+    private const SORTABLE_COLUMNS = ['created_at', 'original_name', 'status', 'ai_used'];
+
     public function updatedSearch(): void
     {
         $this->resetPage();
@@ -41,6 +43,10 @@ new #[Title('All Jobs — Admin')] class extends Component {
 
     public function sort(string $column): void
     {
+        if (! in_array($column, self::SORTABLE_COLUMNS, true)) {
+            return;
+        }
+
         if ($this->sortBy === $column) {
             $this->sortDir = $this->sortDir === 'asc' ? 'desc' : 'asc';
         } else {
@@ -61,7 +67,10 @@ new #[Title('All Jobs — Admin')] class extends Component {
             }))
             ->when($this->status, fn ($q) => $q->where('status', $this->status))
             ->when($this->aiFilter !== '', fn ($q) => $q->where('ai_used', $this->aiFilter === 'ai'))
-            ->orderBy($this->sortBy, $this->sortDir)
+            ->orderBy(
+                in_array($this->sortBy, self::SORTABLE_COLUMNS, true) ? $this->sortBy : 'created_at',
+                $this->sortDir === 'asc' ? 'asc' : 'desc',
+            )
             ->paginate(20);
     }
 

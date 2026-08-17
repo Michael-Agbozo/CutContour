@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
@@ -32,6 +33,8 @@ new #[Title('Error Logs — Admin')] class extends Component {
 
     public function clearLog(): void
     {
+        Gate::authorize('manage-system');
+
         $logPath = storage_path('logs/laravel.log');
 
         if (file_exists($logPath)) {
