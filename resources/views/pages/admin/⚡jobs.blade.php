@@ -126,26 +126,26 @@ new #[Title('All Jobs — Admin')] class extends Component {
                 <tr>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">File</th>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">User</th>
-                    <th wire:click="sort('status')" tabindex="0" role="button" aria-label="Sort by status" @keydown.enter.prevent="$wire.sort('status')" @keydown.space.prevent="$wire.sort('status')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
+                    <th wire:click="sort('status')" tabindex="0" role="button" aria-label="Sort by status" aria-sort="{{ $sortBy === 'status' ? ($sortDir === 'asc' ? 'ascending' : 'descending') : 'none' }}" @keydown.enter.prevent="$wire.sort('status')" @keydown.space.prevent="$wire.sort('status')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
                         Status
                         @if($sortBy === 'status')
                             <span class="ml-1">{{ $sortDir === 'asc' ? '↑' : '↓' }}</span>
                         @endif
                     </th>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Path</th>
-                    <th wire:click="sort('confidence_score')" tabindex="0" role="button" aria-label="Sort by confidence" @keydown.enter.prevent="$wire.sort('confidence_score')" @keydown.space.prevent="$wire.sort('confidence_score')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
+                    <th wire:click="sort('confidence_score')" tabindex="0" role="button" aria-label="Sort by confidence" aria-sort="{{ $sortBy === 'confidence_score' ? ($sortDir === 'asc' ? 'ascending' : 'descending') : 'none' }}" @keydown.enter.prevent="$wire.sort('confidence_score')" @keydown.space.prevent="$wire.sort('confidence_score')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
                         Confidence
                         @if($sortBy === 'confidence_score')
                             <span class="ml-1">{{ $sortDir === 'asc' ? '↑' : '↓' }}</span>
                         @endif
                     </th>
-                    <th wire:click="sort('processing_duration_ms')" tabindex="0" role="button" aria-label="Sort by duration" @keydown.enter.prevent="$wire.sort('processing_duration_ms')" @keydown.space.prevent="$wire.sort('processing_duration_ms')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
+                    <th wire:click="sort('processing_duration_ms')" tabindex="0" role="button" aria-label="Sort by duration" aria-sort="{{ $sortBy === 'processing_duration_ms' ? ($sortDir === 'asc' ? 'ascending' : 'descending') : 'none' }}" @keydown.enter.prevent="$wire.sort('processing_duration_ms')" @keydown.space.prevent="$wire.sort('processing_duration_ms')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
                         Duration
                         @if($sortBy === 'processing_duration_ms')
                             <span class="ml-1">{{ $sortDir === 'asc' ? '↑' : '↓' }}</span>
                         @endif
                     </th>
-                    <th wire:click="sort('created_at')" tabindex="0" role="button" aria-label="Sort by creation date" @keydown.enter.prevent="$wire.sort('created_at')" @keydown.space.prevent="$wire.sort('created_at')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
+                    <th wire:click="sort('created_at')" tabindex="0" role="button" aria-label="Sort by creation date" aria-sort="{{ $sortBy === 'created_at' ? ($sortDir === 'asc' ? 'ascending' : 'descending') : 'none' }}" @keydown.enter.prevent="$wire.sort('created_at')" @keydown.space.prevent="$wire.sort('created_at')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
                         Created
                         @if($sortBy === 'created_at')
                             <span class="ml-1">{{ $sortDir === 'asc' ? '↑' : '↓' }}</span>

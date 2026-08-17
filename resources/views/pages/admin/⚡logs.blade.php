@@ -66,8 +66,13 @@ new #[Title('Error Logs — Admin')] class extends Component {
     }
 
     /**
-     * Tail + parse the log file. Cached by (mtime, size, requested lines) for 15s
-     * so search/level updates don't force a re-scan.
+     * Tail + parse the log file. Cached in 15-second buckets so search/level
+     * updates don't force a re-scan and concurrent admins share the same read.
+     *
+     * The key deliberately avoids filemtime/filesize — on the database cache
+     * driver every unique tuple wrote a fresh row, so those stat calls fired
+     * (and thrashed the cache table) on every render. Time-bucketing keeps the
+     * key stable across a bucket without any stat syscalls on a cache hit.
      */
     #[Computed]
     public function rawEntries(): Collection
@@ -78,7 +83,7 @@ new #[Title('Error Logs — Admin')] class extends Component {
             return collect();
         }
 
-        $cacheKey = sprintf('admin.logs:%s:%d:%d:%d', md5($logPath), filemtime($logPath), filesize($logPath), $this->lines);
+        $cacheKey = 'admin.logs:'.md5($logPath).':'.intdiv(time(), 15).':'.$this->lines;
 
         return Cache::remember($cacheKey, 15, function () use ($logPath): Collection {
             $lines = $this->tailFile($logPath, $this->lines * 5); // Over-read for multiline entries

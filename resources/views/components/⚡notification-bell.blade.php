@@ -32,12 +32,17 @@ new class extends Component {
             $notification->markAsRead();
             $this->unreadCount = max(0, $this->unreadCount - 1);
         }
+
+        // Let listeners (sidebar recent-jobs, future badges) refresh from bell actions.
+        $this->dispatch('notification-count-changed');
     }
 
     public function markAllAsRead(): void
     {
         auth()->user()->unreadNotifications()->update(['read_at' => now()]);
         $this->unreadCount = 0;
+
+        $this->dispatch('notification-count-changed');
     }
 
     public function deleteNotification(string $id): void
@@ -50,6 +55,8 @@ new class extends Component {
             }
             $notification->delete();
         }
+
+        $this->dispatch('notification-count-changed');
     }
 };
 

@@ -236,6 +236,128 @@ test('job passes target dimensions to preprocess', function () {
         ->and($job->height)->toBe(576);
 });
 
+test('job rasterises pdf uploads via Ghostscript before ImageMagick preprocessing (REG-1)', function () {
+    // Front-end accepts pdf/ai uploads. Feeding them to `convert` fails now
+    // that the hardened ImageMagick policy blocks the PDF coder — the job
+    // must rasterise the first page with Ghostscript (sandboxed via -dSAFER)
+    // and hand the PNG preview to the raster pipeline. The final assemble()
+    // call still receives the original PDF path (PdfService short-circuits).
+    config(['cutjob.binaries.gs' => '/bin/true']); // no-op stand-in for gs
+
+    $user = User::factory()->create();
+    $job = CutJob::factory()->for($user)->create([
+        'file_type' => 'pdf',
+        'original_name' => 'artwork.pdf',
+    ]);
+
+    Storage::put($job->file_path, 'fake-pdf-content');
+    $sourcePath = Storage::path($job->file_path);
+
+    $workDir = Storage::path("users/{$user->id}/jobs/{$job->id}/work");
+
+    $imageProcessor = Mockery::mock(ImageProcessingService::class);
+    // The path fed into preprocess MUST be the rasterised preview, not the PDF.
+    $imageProcessor->shouldReceive('preprocess')
+        ->once()
+        ->with($workDir.'/preview.png', $workDir, null, null)
+        ->andReturn(['path' => $workDir.'/preprocessed.png', 'width' => 800, 'height' => 600]);
+    $imageProcessor->shouldReceive('generateMask')->once()->andReturn($workDir.'/mask.png');
+
+    $confidence = Mockery::mock(ConfidenceService::class);
+    $confidence->shouldReceive('evaluate')->once()->andReturn(['score' => 0.9, 'useAi' => false]);
+
+    $ai = Mockery::mock(AIService::class);
+    $ai->shouldNotReceive('analyze');
+
+    $vectorizer = Mockery::mock(VectorizationService::class);
+    $vectorizer->shouldReceive('vectorize')->once()->andReturn($workDir.'/cutpath.svg');
+
+    // assemble() must still receive the ORIGINAL PDF path so its own PDF
+    // short-circuit fires (no re-conversion of an already-vector artwork).
+    $pdf = Mockery::mock(PdfService::class);
+    $pdf->shouldReceive('assemble')
+        ->once()
+        ->with(Mockery::on(fn ($args) => true), Mockery::any(), Mockery::any(), Mockery::any(), Mockery::any(), Mockery::any())
+        ->andReturnUsing(function ($originalPath) use ($sourcePath) {
+            expect($originalPath)->toBe($sourcePath);
+
+            return '/tmp/artwork_800x600.pdf';
+        });
+    $pdf->shouldReceive('buildFilename')->andReturn('artwork_800x600.pdf');
+
+    (new ProcessCutJob($job))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf);
+
+    $job->refresh();
+    expect($job->status)->toBe('completed');
+});
+
+test('idempotency guard blocks re-run while another worker still holds a fresh lease (REG-2)', function () {
+    $user = User::factory()->create();
+    $job = CutJob::factory()->for($user)->create([
+        'file_type' => 'png',
+        'original_name' => 'artwork.png',
+        'status' => 'processing', // simulate another worker mid-flight
+    ]);
+    // Simulate worker A having taken the lease and started processing:
+    // pipeline_step >= 1 marks that handle() actually ran, and updated_at is
+    // fresh from A's ongoing work.
+    $job->forceFill([
+        'pipeline_step' => ProcessCutJob::STEP_PREPROCESS,
+        'updated_at' => now(),
+    ])->saveQuietly();
+
+    Storage::put($job->file_path, 'fake-image-content');
+
+    // If the guard works, none of these services should be touched.
+    $imageProcessor = Mockery::mock(ImageProcessingService::class);
+    $imageProcessor->shouldNotReceive('preprocess');
+    $confidence = Mockery::mock(ConfidenceService::class);
+    $ai = Mockery::mock(AIService::class);
+    $vectorizer = Mockery::mock(VectorizationService::class);
+    $pdf = Mockery::mock(PdfService::class);
+
+    (new ProcessCutJob($job))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf);
+
+    // Row must be untouched — no output, still processing under the other lease.
+    $job->refresh();
+    expect($job->output_path)->toBeNull()
+        ->and($job->status)->toBe('processing');
+});
+
+test('idempotency guard takes over a stale processing lease from a crashed worker (REG-2)', function () {
+    $user = User::factory()->create();
+    $job = CutJob::factory()->for($user)->create([
+        'file_type' => 'png',
+        'original_name' => 'artwork.png',
+        'status' => 'processing',
+    ]);
+    // Worker A got to step 1 then crashed — pipeline_step >= 1 and
+    // updated_at is older than timeout+30s grace.
+    $job->forceFill([
+        'pipeline_step' => ProcessCutJob::STEP_PREPROCESS,
+        'updated_at' => now()->subSeconds(400),
+    ])->saveQuietly();
+
+    Storage::put($job->file_path, 'fake-image-content');
+
+    [
+        'imageProcessor' => $imageProcessor,
+        'confidence' => $confidence,
+        'ai' => $ai,
+        'vectorizer' => $vectorizer,
+        'pdf' => $pdf,
+        'workDir' => $workDir,
+    ] = makeMockServices(width: 800, height: 600, score: 0.9, useAi: false);
+
+    $imageProcessor->shouldReceive('generateMask')->once()->andReturn($workDir.'/mask.png');
+    $ai->shouldNotReceive('analyze');
+
+    (new ProcessCutJob($job))->handle($imageProcessor, $confidence, $ai, $vectorizer, $pdf);
+
+    $job->refresh();
+    expect($job->status)->toBe('completed');
+});
+
 test('job is marked failed with a user-safe message and admin detail when pipeline throws', function () {
     $user = User::factory()->create();
     $job = CutJob::factory()->for($user)->create([
