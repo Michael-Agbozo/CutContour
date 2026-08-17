@@ -108,7 +108,7 @@ new #[Title('Users — Admin')] class extends Component {
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">User</th>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Email</th>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Role</th>
-                    <th wire:click="sort('created_at')" tabindex="0" role="button" aria-label="Sort by joined date" @keydown.enter.prevent="$wire.sort('created_at')" @keydown.space.prevent="$wire.sort('created_at')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
+                    <th wire:click="sort('created_at')" tabindex="0" role="button" aria-label="Sort by joined date" aria-sort="{{ $sortBy === 'created_at' ? ($sortDir === 'asc' ? 'ascending' : 'descending') : 'none' }}" @keydown.enter.prevent="$wire.sort('created_at')" @keydown.space.prevent="$wire.sort('created_at')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
                         Joined
                         @if($sortBy === 'created_at')
                             <span class="ml-1">{{ $sortDir === 'asc' ? '↑' : '↓' }}</span>

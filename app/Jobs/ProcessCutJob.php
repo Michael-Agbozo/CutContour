@@ -78,13 +78,47 @@ class ProcessCutJob implements ShouldQueue
         $jobId = $this->cutJob->id;
         $userId = $this->cutJob->user_id;
 
-        // Idempotency guard: a redelivered message must not re-run a completed job.
-        // Lock the row and re-read status inside a short transaction.
-        $shouldProcess = DB::transaction(function () {
+        // Idempotency guard: a redelivered message must not re-run a completed
+        // job, and must not race a worker that still owns the lease. Lock the
+        // row and re-read status inside a short transaction.
+        $shouldProcess = DB::transaction(function () use ($jobId) {
             $fresh = CutJob::whereKey($this->cutJob->id)->lockForUpdate()->first();
 
             if ($fresh === null || $fresh->status === 'completed' || $fresh->output_path !== null) {
+                Log::info('ProcessCutJob: skipped (already completed or missing)', ['job_id' => $jobId]);
+
                 return false;
+            }
+
+            // Lease-based re-entry guard: a `processing` row alone is not
+            // enough to skip — the row is *created* with status='processing'
+            // (see jobs/create), so the first pickup is legitimately
+            // "processing + fresh updated_at". A worker has genuinely taken
+            // the lease only once handle() has recorded a pipeline step
+            // (pipeline_step >= 1). From that point on:
+            //   • fresh updated_at → another worker is actively running; skip
+            //   • stale updated_at (crashed worker: OOM, kill -9) → take over
+            $pipelineStep = (int) ($fresh->pipeline_step ?? 0);
+
+            if ($fresh->status === 'processing' && $pipelineStep >= 1) {
+                $leaseExpiry = now()->subSeconds($this->timeout + 30);
+
+                if ($fresh->updated_at?->gt($leaseExpiry)) {
+                    Log::info('ProcessCutJob: skipped (fresh lease held by another worker)', [
+                        'job_id' => $jobId,
+                        'pipeline_step' => $pipelineStep,
+                        'updated_at' => $fresh->updated_at?->toIso8601String(),
+                    ]);
+
+                    return false;
+                }
+
+                Log::info('ProcessCutJob: taking over stale lease from crashed worker', [
+                    'job_id' => $jobId,
+                    'pipeline_step' => $pipelineStep,
+                    'lease_expired_before' => $leaseExpiry->toIso8601String(),
+                    'updated_at' => $fresh->updated_at?->toIso8601String(),
+                ]);
             }
 
             $fresh->forceFill([
@@ -97,8 +131,6 @@ class ProcessCutJob implements ShouldQueue
         });
 
         if (! $shouldProcess) {
-            Log::info('ProcessCutJob: skipped (already completed or missing)', ['job_id' => $jobId]);
-
             return;
         }
 
@@ -114,8 +146,20 @@ class ProcessCutJob implements ShouldQueue
         try {
             // ── Step 1: Preprocess ────────────────────────────────────────────────
             $this->recordStep(self::STEP_PREPROCESS);
+
+            // PDF and AI uploads cannot be fed directly to ImageMagick — the
+            // hardened storage/imagemagick/policy.xml blocks the PDF coder to
+            // prevent ImageTragick-class RCE. Rasterise the first page with
+            // Ghostscript (sandboxed via -dSAFER) and hand the PNG preview to
+            // the raster pipeline. The final assemble() step still receives
+            // the original PDF path so PdfService's PDF short-circuit runs.
+            $rasterSource = $sourcePath;
+            if (in_array($this->cutJob->file_type, ['pdf', 'ai'], true)) {
+                $rasterSource = $this->rasterizePdfPreview($sourcePath, $workDir);
+            }
+
             $preprocessed = $imageProcessor->preprocess(
-                $sourcePath,
+                $rasterSource,
                 $workDir,
                 $this->targetWidthPx > 0 ? $this->targetWidthPx : null,
                 $this->targetHeightPx > 0 ? $this->targetHeightPx : null,
@@ -287,6 +331,40 @@ class ProcessCutJob implements ShouldQueue
                 ]);
             }
         }
+    }
+
+    /**
+     * Rasterise the first page of a PDF (or AI, which is really a PDF) to PNG
+     * via Ghostscript. Ghostscript is invoked with -dSAFER so it is safe on
+     * untrusted uploads — this is the sandboxed alternative to ImageMagick's
+     * PDF coder which the hardened policy.xml blocks.
+     *
+     * @throws RuntimeException
+     */
+    private function rasterizePdfPreview(string $sourcePath, string $workDir): string
+    {
+        if (! is_dir($workDir) && ! mkdir($workDir, 0755, true) && ! is_dir($workDir)) {
+            throw new RuntimeException("Failed to create work dir: {$workDir}");
+        }
+
+        $previewPath = $workDir.'/preview.png';
+        $gs = config('cutjob.binaries.gs', 'gs');
+
+        $output = [];
+        $code = 0;
+
+        exec(sprintf(
+            '%s -dSAFER -dBATCH -dNOPAUSE -dFirstPage=1 -dLastPage=1 -sDEVICE=png16m -r150 -o %s %s 2>&1',
+            escapeshellarg($gs),
+            escapeshellarg($previewPath),
+            escapeshellarg($sourcePath),
+        ), $output, $code);
+
+        if ($code !== 0) {
+            throw new RuntimeException('PDF preview rasterisation failed: '.implode(' ', $output));
+        }
+
+        return $previewPath;
     }
 
     /**

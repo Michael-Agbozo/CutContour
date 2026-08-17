@@ -23,8 +23,10 @@ new #[Title('Admin Dashboard')] class extends Component {
             ->selectRaw("SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed")
             ->selectRaw("SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing")
             ->selectRaw("SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END) AS expired")
-            ->selectRaw('SUM(CASE WHEN ai_used = 1 THEN 1 ELSE 0 END) AS ai_used')
-            ->selectRaw("SUM(CASE WHEN ai_used = 0 AND status IN ('completed', 'failed') THEN 1 ELSE 0 END) AS fast_path")
+            // `ai_used = 1` is MySQL-specific — Postgres rejects int-to-bool
+            // comparison. Refer to the column directly so both drivers work.
+            ->selectRaw('SUM(CASE WHEN ai_used THEN 1 ELSE 0 END) AS ai_used')
+            ->selectRaw("SUM(CASE WHEN NOT ai_used AND status IN ('completed', 'failed') THEN 1 ELSE 0 END) AS fast_path")
             ->selectRaw("AVG(CASE WHEN status = 'completed' THEN processing_duration_ms END) AS avg_duration_ms")
             ->selectRaw('AVG(confidence_score) AS avg_confidence')
             ->first();

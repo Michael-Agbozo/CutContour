@@ -179,7 +179,7 @@ class PdfService
 %!PS-Adobe-3.0
 << /PageSize [{$widthPt} {$heightPt}] >> setpagedevice
 
-% Define the "{$this->spotColorName}" spot color separation.
+% Define the "{$safeName}" spot color separation.
 % The tint transform maps a single-channel intensity to the CMYK fallback the
 % RIP shows when the separation is not resolved to plate.
 /{$safeName}Sep [
@@ -216,6 +216,10 @@ PS;
      */
     private function svgPathToPostScript(string $d): string
     {
+        // Split packed numbers like "1.5-2.3" or "4+5" into "1.5 -2.3" and
+        // "4 +5" so `is_numeric()` accepts each token — otherwise readNum()
+        // returns null and the path collapses to a point.
+        $d = preg_replace('/([0-9.])([-+])/', '$1 $2', $d);
         // Insert a space before each command letter so tokens split cleanly.
         $normalized = preg_replace('/([MmLlCcZzHhVvSsQqTtAa])/', ' $1 ', $d);
         $normalized = preg_replace('/,/', ' ', $normalized);
@@ -241,6 +245,7 @@ PS;
         };
 
         while ($i < count($tokens)) {
+            $before = $i;
             $token = $tokens[$i];
 
             if (in_array($token, ['M', 'm', 'L', 'l', 'C', 'c', 'Z', 'z', 'H', 'h', 'V', 'v'], true)) {
@@ -318,8 +323,17 @@ PS;
                 case 'z':
                     $out[] = 'closepath';
                     break;
-                default:
-                    $i++; // skip unknown token
+            }
+
+            // Never silently drop a token — corrupt cut paths are a nightmare
+            // to debug. If nothing in this iteration advanced $i we would loop
+            // forever, which happens for SVG operators the parser doesn't
+            // implement (S/s, Q/q, T/t, A/a) or any non-numeric junk in the
+            // argument stream. Fail loudly instead.
+            if ($i === $before) {
+                throw new RuntimeException(
+                    "Unsupported SVG path operator or malformed token: {$token}"
+                );
             }
         }
 
