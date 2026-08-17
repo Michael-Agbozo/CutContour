@@ -151,7 +151,9 @@ new #[Title('Notifications')] class extends Component {
                             'isOk'         => $isOk,
                             'originalName' => $data['original_name'] ?? 'Unknown file',
                             'status'       => $data['status'] ?? '',
-                            'downloadUrl'  => $data['download_url'] ?? null,
+                            'downloadUrl'  => ($isOk && ! empty($data['cut_job_id']))
+                            ? \Illuminate\Support\Facades\URL::temporarySignedRoute('jobs.download', now()->addHours(24), ['cutJob' => $data['cut_job_id']])
+                            : null,
                             'errorMessage' => $isAdmin
                                 ? ($data['error_message'] ?? null)
                                 : 'Processing failed. Please try again or contact support.',
@@ -185,7 +187,9 @@ new #[Title('Notifications')] class extends Component {
                         'isOk'         => $isOk,
                         'originalName' => $data['original_name'] ?? 'Unknown file',
                         'status'       => $data['status'] ?? '',
-                        'downloadUrl'  => $data['download_url'] ?? null,
+                        'downloadUrl'  => ($isOk && ! empty($data['cut_job_id']))
+                            ? \Illuminate\Support\Facades\URL::temporarySignedRoute('jobs.download', now()->addHours(24), ['cutJob' => $data['cut_job_id']])
+                            : null,
                         'errorMessage' => $isAdmin
                             ? ($data['error_message'] ?? null)
                             : 'Processing failed. Please try again or contact support.',

@@ -34,14 +34,14 @@ class CutJobNotification extends Notification implements ShouldQueue
     }
 
     /**
-     * Short-TTL download URL for in-app payload.
-     *
-     * The signed URL stored here is bounded to 15 minutes so that a leaked
-     * `notifications.data` row (backup dump, read replica, future SQLi) does
-     * not yield a long-lived, session-independent download link. Consumers
-     * that render notifications long after arrival should ideally rebuild
-     * the URL from `cut_job_id` at read time instead of relying on this
-     * cached value.
+     * DB payload never stores a signed download URL. A prior version stored
+     * one with a 15-minute TTL; that both leaked information (a leaked
+     * notifications table gave anyone a session-independent download link)
+     * AND broke the in-app flow (any user opening the notifications page
+     * more than 15 min after the job finished got a 403). Consumers must
+     * build a fresh URL from `cut_job_id` at render time — see
+     * resources/views/components/⚡notification-bell.blade.php and
+     * resources/views/pages/notifications/_row.blade.php.
      *
      * @return array<string, mixed>
      */
@@ -51,7 +51,6 @@ class CutJobNotification extends Notification implements ShouldQueue
             'cut_job_id' => $this->cutJob->id,
             'original_name' => $this->cutJob->original_name,
             'status' => $this->status,
-            'download_url' => $this->status === 'completed' ? $this->signedDownloadUrl(now()->addMinutes(15)) : null,
             'error_message' => $this->status === 'failed' ? $this->cutJob->error_message : null,
         ];
     }

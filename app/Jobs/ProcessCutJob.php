@@ -81,6 +81,12 @@ class ProcessCutJob implements ShouldQueue
         // Idempotency guard: a redelivered message must not re-run a completed
         // job, and must not race a worker that still owns the lease. Lock the
         // row and re-read status inside a short transaction.
+        //
+        // Lease claim is atomic: on entry we bump pipeline_step to STEP_PREPROCESS
+        // (1). Any concurrent worker that reaches this transaction later will
+        // observe pipeline_step >= 1 with a fresh updated_at and skip. If the
+        // lease is stale (updated_at older than timeout + grace) we assume the
+        // prior worker died and take over.
         $shouldProcess = DB::transaction(function () use ($jobId) {
             $fresh = CutJob::whereKey($this->cutJob->id)->lockForUpdate()->first();
 
@@ -90,14 +96,6 @@ class ProcessCutJob implements ShouldQueue
                 return false;
             }
 
-            // Lease-based re-entry guard: a `processing` row alone is not
-            // enough to skip — the row is *created* with status='processing'
-            // (see jobs/create), so the first pickup is legitimately
-            // "processing + fresh updated_at". A worker has genuinely taken
-            // the lease only once handle() has recorded a pipeline step
-            // (pipeline_step >= 1). From that point on:
-            //   • fresh updated_at → another worker is actively running; skip
-            //   • stale updated_at (crashed worker: OOM, kill -9) → take over
             $pipelineStep = (int) ($fresh->pipeline_step ?? 0);
 
             if ($fresh->status === 'processing' && $pipelineStep >= 1) {
@@ -121,9 +119,11 @@ class ProcessCutJob implements ShouldQueue
                 ]);
             }
 
+            // Claim the lease atomically: set pipeline_step >= 1 INSIDE the
+            // transaction so a second worker's read sees a claimed row.
             $fresh->forceFill([
                 'status' => 'processing',
-                'pipeline_step' => 0,
+                'pipeline_step' => self::STEP_PREPROCESS,
                 'error_message' => null,
             ])->save();
 
