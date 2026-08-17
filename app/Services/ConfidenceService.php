@@ -17,9 +17,12 @@ class ConfidenceService
     /** Files below this score are routed to the AI-Enhanced path. */
     private float $threshold;
 
+    private string $convert;
+
     public function __construct()
     {
         $this->threshold = (float) config('cutjob.confidence_threshold', 0.65);
+        $this->convert = config('cutjob.binaries.convert', 'convert');
     }
 
     /**
@@ -66,7 +69,8 @@ class ConfidenceService
         // Use ImageMagick to get mean pixel value of the edge-detected image
         exec(
             sprintf(
-                'convert %s -colorspace Gray -canny 0x1+10%%+30%% -format "%%[fx:mean]" info: 2>/dev/null',
+                '%s %s -colorspace Gray -canny 0x1+10%%+30%% -format "%%[fx:mean]" info: 2>/dev/null',
+                escapeshellarg($this->convert),
                 escapeshellarg($path),
             ),
             $output,
@@ -91,7 +95,8 @@ class ConfidenceService
 
         exec(
             sprintf(
-                'convert %s -colors 256 -format "%%k" info: 2>/dev/null',
+                '%s %s -colors 256 -format "%%k" info: 2>/dev/null',
+                escapeshellarg($this->convert),
                 escapeshellarg($path),
             ),
             $output,

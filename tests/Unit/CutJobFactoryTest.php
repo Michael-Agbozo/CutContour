@@ -1,7 +1,9 @@
 <?php
 
+use Database\Factories\CutJobFactory;
+
 test('cut job factory generates ULID-format file paths', function () {
-    $factory = \Database\Factories\CutJobFactory::new();
+    $factory = CutJobFactory::new();
     $definition = $factory->definition();
     $filePath = $definition['file_path'];
 

@@ -2,6 +2,7 @@
 
 use App\Jobs\ProcessCutJob;
 use App\Models\CutJob;
+use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
@@ -43,6 +44,8 @@ new #[Title('Failed Jobs — Admin')] class extends Component {
 
     public function retryJob(string $id): void
     {
+        Gate::authorize('manage-system');
+
         $job = CutJob::find($id);
 
         if (! $job || $job->status !== 'failed') {
@@ -62,6 +65,8 @@ new #[Title('Failed Jobs — Admin')] class extends Component {
 
     public function deleteJob(string $id): void
     {
+        Gate::authorize('manage-system');
+
         CutJob::find($id)?->delete();
     }
 };

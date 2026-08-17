@@ -83,8 +83,14 @@ class AIService
     /**
      * Validate that the string contains only valid SVG path data characters.
      */
+    private const MAX_SVG_PATH_LENGTH = 200_000;
+
     private function isValidSvgPathData(string $data): bool
     {
+        if (strlen($data) > self::MAX_SVG_PATH_LENGTH) {
+            return false;
+        }
+
         // SVG path d attribute: commands (MLCSQTAZHVmlcsqtazhv), numbers, commas, spaces, dots, dashes, scientific notation
         return (bool) preg_match('/^[MLCSQTAZHVmlcsqtazhv0-9\s,.\-eE+]+$/', $data);
     }
@@ -102,7 +108,9 @@ class AIService
             .'<path d="'.htmlspecialchars($pathData, ENT_QUOTES | ENT_XML1).'" />'
             .'</svg>';
 
-        file_put_contents($svgPath, $svg);
+        if (file_put_contents($svgPath, $svg) === false) {
+            throw new RuntimeException("Failed to write AI SVG output to {$svgPath}.");
+        }
 
         Log::debug('AIService: extracted SVG path via agent', [
             'path' => $svgPath,

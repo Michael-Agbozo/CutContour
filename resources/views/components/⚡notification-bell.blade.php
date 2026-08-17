@@ -96,7 +96,7 @@ new class extends Component {
      }"
      @click.outside="open = false"
      @keydown.escape.window="open = false; closeModal()"
-     wire:poll.60000ms="refreshCount">
+     wire:poll.120000ms="refreshCount">
 
     {{-- Bell button --}}
     <button

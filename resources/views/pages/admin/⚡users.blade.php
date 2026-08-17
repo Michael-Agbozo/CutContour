@@ -18,6 +18,8 @@ new #[Title('Users — Admin')] class extends Component {
 
     public string $sortDir = 'desc';
 
+    private const SORTABLE_COLUMNS = ['created_at', 'name', 'email'];
+
     public function updatedSearch(): void
     {
         $this->resetPage();
@@ -25,6 +27,10 @@ new #[Title('Users — Admin')] class extends Component {
 
     public function sort(string $column): void
     {
+        if (! in_array($column, self::SORTABLE_COLUMNS, true)) {
+            return;
+        }
+
         if ($this->sortBy === $column) {
             $this->sortDir = $this->sortDir === 'asc' ? 'desc' : 'asc';
         } else {
@@ -48,7 +54,10 @@ new #[Title('Users — Admin')] class extends Component {
                 $q->where('name', 'like', "%{$this->search}%")
                     ->orWhere('email', 'like', "%{$this->search}%");
             }))
-            ->orderBy($this->sortBy, $this->sortDir)
+            ->orderBy(
+                in_array($this->sortBy, self::SORTABLE_COLUMNS, true) ? $this->sortBy : 'created_at',
+                $this->sortDir === 'asc' ? 'asc' : 'desc',
+            )
             ->paginate(20);
     }
 
@@ -62,7 +71,7 @@ new #[Title('Users — Admin')] class extends Component {
             return;
         }
 
-        $user->update(['is_admin' => ! $user->is_admin]);
+        $user->forceFill(['is_admin' => ! $user->is_admin])->save();
     }
 
     public function resetUsage(int $userId): void
@@ -75,7 +84,7 @@ new #[Title('Users — Admin')] class extends Component {
             return;
         }
 
-        $user->update(['usage_reset_at' => now()]);
+        $user->forceFill(['usage_reset_at' => now()])->save();
     }
 };
 
@@ -99,7 +108,7 @@ new #[Title('Users — Admin')] class extends Component {
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">User</th>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Email</th>
                     <th class="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Role</th>
-                    <th wire:click="sort('created_at')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200">
+                    <th wire:click="sort('created_at')" tabindex="0" role="button" aria-label="Sort by joined date" @keydown.enter.prevent="$wire.sort('created_at')" @keydown.space.prevent="$wire.sort('created_at')" class="cursor-pointer px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 hover:text-zinc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cutcontour dark:text-zinc-400 dark:hover:text-zinc-200">
                         Joined
                         @if($sortBy === 'created_at')
                             <span class="ml-1">{{ $sortDir === 'asc' ? '↑' : '↓' }}</span>

@@ -42,7 +42,13 @@ class CutJobPolicy
     {
         return $user->id === $cutJob->user_id
             && $cutJob->status === 'completed'
-            && $cutJob->output_path !== null;
+            && $cutJob->output_path !== null
+            && ! $cutJob->isExpired;
+    }
+
+    public function update(User $user, CutJob $cutJob): bool
+    {
+        return $user->id === $cutJob->user_id;
     }
 
     public function delete(User $user, CutJob $cutJob): bool

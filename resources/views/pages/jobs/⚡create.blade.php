@@ -3,6 +3,7 @@
 use App\Jobs\ProcessCutJob;
 use App\Models\CutJob;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
@@ -144,6 +145,17 @@ new #[Title('New Job')] class extends Component {
     {
         /** @var \App\Models\User $user */
         $user = auth()->user();
+
+        // Burst rate limit: 3 job creations per minute per user, independent of the monthly quota.
+        $throttleKey = 'cutjob-create:'.$user->id;
+        if (RateLimiter::tooManyAttempts($throttleKey, 3)) {
+            $this->addError('file', __('Too many submissions. Please wait :seconds seconds before trying again.', [
+                'seconds' => RateLimiter::availableIn($throttleKey),
+            ]));
+
+            return;
+        }
+
         $limit = config('cutjob.monthly_job_limit', 10);
 
         $usageQuery = $user->cutJobs()
@@ -195,8 +207,12 @@ new #[Title('New Job')] class extends Component {
 
         $this->state = 'processing';
         $this->resetSteps();
+        $this->steps[0]['done'] = true;
+        $this->steps[1]['active'] = true;
 
         try {
+            RateLimiter::hit($throttleKey, 60);
+
             $ext = strtolower($this->file->getClientOriginalExtension());
 
             $cutJob = CutJob::create([
@@ -218,7 +234,10 @@ new #[Title('New Job')] class extends Component {
                 throw new \RuntimeException('Failed to store uploaded file.');
             }
 
-            $cutJob->update(['file_path' => $storagePath]);
+            $cutJob->forceFill([
+                'file_path' => $storagePath,
+                'file_size_bytes' => $this->file->getSize(),
+            ])->save();
 
             $targetWidthPx = $this->unitToPx($this->targetWidth ?? 0);
             $targetHeightPx = $this->unitToPx($this->targetHeight ?? 0);
@@ -246,12 +265,14 @@ new #[Title('New Job')] class extends Component {
 
         $cutJob = CutJob::select([
             'id', 'status', 'width', 'height', 'output_path',
-            'processing_duration_ms', 'ai_used', 'error_message',
+            'processing_duration_ms', 'ai_used', 'error_message', 'pipeline_step',
         ])->find($this->currentJobId);
 
         if ($cutJob === null) {
             return;
         }
+
+        $this->updateStepsFromPipeline((int) ($cutJob->pipeline_step ?? 0));
 
         if ($cutJob->status === 'completed') {
             $this->outputWidth = $cutJob->width;
@@ -345,6 +366,28 @@ new #[Title('New Job')] class extends Component {
             ['label' => 'Assembling CutContour layer',     'done' => false, 'active' => false],
             ['label' => 'Exporting PDF',                   'done' => false, 'active' => false],
         ];
+    }
+
+    /**
+     * Reflect the worker's persisted `pipeline_step` in the UI steps array.
+     * Steps 1..N are marked done; step N+1 is marked active while running.
+     */
+    private function updateStepsFromPipeline(int $pipelineStep): void
+    {
+        if ($pipelineStep <= 0 || empty($this->steps)) {
+            return;
+        }
+
+        // Upload is always done once processing starts.
+        $this->steps[0]['done'] = true;
+
+        // Map worker step (1..6) → UI step index (offset by upload row).
+        $uiIndex = min($pipelineStep, count($this->steps) - 1);
+
+        for ($i = 1; $i <= $uiIndex; $i++) {
+            $this->steps[$i]['done'] = $i < $uiIndex;
+            $this->steps[$i]['active'] = $i === $uiIndex;
+        }
     }
 };
 
@@ -495,9 +538,25 @@ new #[Title('New Job')] class extends Component {
                 <div class="relative overflow-hidden rounded-lg bg-white shadow-2xl ring-1 ring-zinc-900/10 dark:bg-zinc-900 dark:ring-white/5"
                      style="min-width: 240px; min-height: 300px;">
                     @if($file)
-                        <img src="{{ $file->temporaryUrl() }}"
-                             alt="Uploaded artwork"
-                             class="block max-h-[55vh] w-full object-contain" />
+                        @php
+                            // Livewire's temporaryUrl() only supports raster images on the
+                            // local disk — PDF/SVG/AI would 404. Fall back to a document icon.
+                            $ext = strtolower($file->getClientOriginalExtension());
+                            $isImage = in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp'], true);
+                        @endphp
+                        @if($isImage)
+                            <img src="{{ $file->temporaryUrl() }}"
+                                 alt="Uploaded artwork"
+                                 class="block max-h-[55vh] w-full object-contain" />
+                        @else
+                            <div class="flex h-[55vh] w-full flex-col items-center justify-center gap-3 bg-zinc-50 text-zinc-400 dark:bg-zinc-950 dark:text-zinc-600">
+                                <flux:icon name="document" class="size-16" />
+                                <div class="text-center">
+                                    <p class="text-xs font-semibold uppercase tracking-wide">{{ $ext }} file</p>
+                                    <p class="mt-1 max-w-xs truncate px-4 text-[11px]">{{ $file->getClientOriginalName() }}</p>
+                                </div>
+                            </div>
+                        @endif
                     @endif
 
                     {{-- Dashed cut-path border — uses custom spot colour --}}

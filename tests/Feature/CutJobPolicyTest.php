@@ -67,6 +67,34 @@ test('user cannot delete another users job', function () {
     expect($user->can('delete', $job))->toBeFalse();
 });
 
+test('user cannot download a completed job whose expiry window has passed', function () {
+    $user = User::factory()->create();
+    $job = CutJob::factory()->for($user)->completed()->create([
+        'expires_at' => now()->subDay(),
+    ]);
+
+    expect($user->can('download', $job))->toBeFalse();
+});
+
+test('CutJob update policy allows the owner and blocks others', function () {
+    $user = User::factory()->create();
+    $other = User::factory()->create();
+    $job = CutJob::factory()->for($user)->create();
+
+    expect($user->can('update', $job))->toBeTrue()
+        ->and($other->can('update', $job))->toBeFalse();
+});
+
+test('admins bypass download expiration check via before hook', function () {
+    $admin = User::factory()->admin()->create();
+    $user = User::factory()->create();
+    $job = CutJob::factory()->for($user)->completed()->create([
+        'expires_at' => now()->subDay(),
+    ]);
+
+    expect($admin->can('download', $job))->toBeTrue();
+});
+
 test('visible scope excludes expired jobs', function () {
     $user = User::factory()->create();
     CutJob::factory()->for($user)->create(['status' => 'processing']);

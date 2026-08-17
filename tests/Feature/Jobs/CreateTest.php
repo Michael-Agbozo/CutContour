@@ -124,7 +124,7 @@ test('generate allows jobs after admin resets usage', function () {
     ]);
 
     // Admin resets usage
-    $user->update(['usage_reset_at' => now()->subHour()]);
+    $user->forceFill(['usage_reset_at' => now()->subHour()])->save();
 
     $file = UploadedFile::fake()->create('test.jpg', 100, 'image/jpeg');
 

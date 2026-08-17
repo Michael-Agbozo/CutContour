@@ -1,6 +1,8 @@
 <?php
 
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
@@ -32,18 +34,43 @@ new #[Title('Error Logs — Admin')] class extends Component {
 
     public function clearLog(): void
     {
+        Gate::authorize('manage-system');
+
         $logPath = storage_path('logs/laravel.log');
 
         if (file_exists($logPath)) {
             file_put_contents($logPath, '');
         }
 
-        unset($this->entries);
+        unset($this->entries, $this->rawEntries);
         Flux::toast('Log file cleared.');
     }
 
     #[Computed]
     public function entries(): Collection
+    {
+        // Filters run against the cached raw entries — no re-tail on each keystroke.
+        $entries = $this->rawEntries;
+
+        if ($this->level !== '') {
+            $entries = $entries->where('level', $this->level);
+        }
+
+        if ($this->search !== '') {
+            $search = mb_strtolower($this->search);
+            $entries = $entries->filter(fn (array $e) => str_contains(mb_strtolower($e['message']), $search)
+                || str_contains(mb_strtolower($e['stacktrace']), $search));
+        }
+
+        return $entries->reverse()->take($this->lines)->values();
+    }
+
+    /**
+     * Tail + parse the log file. Cached by (mtime, size, requested lines) for 15s
+     * so search/level updates don't force a re-scan.
+     */
+    #[Computed]
+    public function rawEntries(): Collection
     {
         $logPath = storage_path('logs/laravel.log');
 
@@ -51,55 +78,40 @@ new #[Title('Error Logs — Admin')] class extends Component {
             return collect();
         }
 
-        // Read the last N lines efficiently via a reverse file reader
-        $lines = $this->tailFile($logPath, $this->lines * 5); // Over-read to compensate for multiline entries
+        $cacheKey = sprintf('admin.logs:%s:%d:%d:%d', md5($logPath), filemtime($logPath), filesize($logPath), $this->lines);
 
-        // Parse log entries (each entry starts with [YYYY-MM-DD HH:MM:SS])
-        $entries = collect();
-        $current = null;
+        return Cache::remember($cacheKey, 15, function () use ($logPath): Collection {
+            $lines = $this->tailFile($logPath, $this->lines * 5); // Over-read for multiline entries
 
-        foreach ($lines as $line) {
-            if (preg_match('/^\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})\]\s+\S+\.(\w+):\s+(.*)$/', $line, $m)) {
-                if ($current !== null) {
-                    $entries->push($current);
+            $entries = collect();
+            $current = null;
+
+            foreach ($lines as $line) {
+                if (preg_match('/^\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})\]\s+\S+\.(\w+):\s+(.*)$/', $line, $m)) {
+                    if ($current !== null) {
+                        $entries->push($current);
+                    }
+                    $current = [
+                        'timestamp' => $m[1],
+                        'level' => strtolower($m[2]),
+                        'message' => $m[3],
+                        'stacktrace' => '',
+                    ];
+                } elseif ($current !== null) {
+                    $current['stacktrace'] .= $line."\n";
                 }
-                $current = [
-                    'timestamp' => $m[1],
-                    'level' => strtolower($m[2]),
-                    'message' => $m[3],
-                    'stacktrace' => '',
-                ];
-            } elseif ($current !== null) {
-                $current['stacktrace'] .= $line . "\n";
             }
-        }
 
-        if ($current !== null) {
-            $entries->push($current);
-        }
+            if ($current !== null) {
+                $entries->push($current);
+            }
 
-        // Filter out ProcessCutJob-related entries — those are visible in Failed Jobs
-        $entries = $entries->reject(function (array $entry) {
-            return str_contains($entry['message'], 'ProcessCutJob:')
-                || str_contains($entry['message'], 'App\\Jobs\\ProcessCutJob');
+            // Drop ProcessCutJob noise — visible on the Failed Jobs page.
+            return $entries->reject(function (array $entry) {
+                return str_contains($entry['message'], 'ProcessCutJob:')
+                    || str_contains($entry['message'], 'App\\Jobs\\ProcessCutJob');
+            })->values();
         });
-
-        // Filter by level
-        if ($this->level !== '') {
-            $entries = $entries->where('level', $this->level);
-        }
-
-        // Filter by search
-        if ($this->search !== '') {
-            $search = mb_strtolower($this->search);
-            $entries = $entries->filter(fn (array $e) =>
-                str_contains(mb_strtolower($e['message']), $search)
-                || str_contains(mb_strtolower($e['stacktrace']), $search)
-            );
-        }
-
-        // Reverse so newest first, take requested amount
-        return $entries->reverse()->take($this->lines)->values();
     }
 
     #[Computed]
@@ -189,11 +201,36 @@ new #[Title('Error Logs — Admin')] class extends Component {
                     <option value="{{ $lvl }}">{{ ucfirst($lvl) }}</option>
                 @endforeach
             </flux:select>
-            <flux:button wire:click="clearLog" wire:confirm="Are you sure? This will permanently clear the log file." variant="ghost" size="sm" icon="trash" class="text-red-500">
-                Clear
-            </flux:button>
+            <flux:modal.trigger name="confirm-log-clear">
+                <flux:button variant="ghost" size="sm" icon="trash" class="text-red-500">
+                    Clear
+                </flux:button>
+            </flux:modal.trigger>
         </div>
     </div>
+
+    <flux:modal name="confirm-log-clear" class="max-w-md">
+        <div class="space-y-4">
+            <div>
+                <flux:heading size="lg">Clear error logs?</flux:heading>
+                <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+                    This will permanently clear the current log file. This action cannot be undone.
+                </flux:text>
+            </div>
+
+            <div class="flex justify-end gap-2">
+                <flux:modal.close>
+                    <flux:button variant="filled">Cancel</flux:button>
+                </flux:modal.close>
+
+                <flux:modal.close>
+                    <flux:button wire:click="clearLog" variant="danger" icon="trash">
+                        Clear log file
+                    </flux:button>
+                </flux:modal.close>
+            </div>
+        </div>
+    </flux:modal>
 
     {{-- Log entries --}}
     @if($this->entries->isEmpty())

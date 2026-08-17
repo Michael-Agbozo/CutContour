@@ -26,6 +26,7 @@ class CutJob extends Model
         'original_name',
         'job_name',
         'file_path',
+        'file_size_bytes',
         'output_path',
         'file_type',
         'width',
@@ -42,6 +43,11 @@ class CutJob extends Model
             'ai_used' => 'boolean',
             'confidence_score' => 'float',
             'expires_at' => 'datetime',
+            'width' => 'integer',
+            'height' => 'integer',
+            'processing_duration_ms' => 'integer',
+            'file_size_bytes' => 'integer',
+            'pipeline_step' => 'integer',
         ];
     }
 
@@ -53,7 +59,7 @@ class CutJob extends Model
     /** Whether the job's download window has elapsed. */
     public function isExpired(): Attribute
     {
-        return Attribute::get(fn (): bool => $this->expires_at->isPast());
+        return Attribute::get(fn (): bool => $this->expires_at?->isPast() ?? true);
     }
 
     public function scopeForUser(Builder $query, User $user): void

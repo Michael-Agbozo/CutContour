@@ -1,7 +1,7 @@
 <?php
 
 use App\Models\CutJob;
-use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -14,28 +14,22 @@ new #[Title('Dashboard')] class extends Component {
     public function stats(): array
     {
         $user = auth()->user();
+        $monthStart = now()->startOfMonth();
 
-        $totalJobs = $user->cutJobs()->count();
-        $completed = $user->cutJobs()->where('status', 'completed')->count();
-        $thisMonth = $user->cutJobs()
-            ->whereMonth('created_at', now()->month)
-            ->whereYear('created_at', now()->year)
-            ->count();
-
-        $storageMb = 0;
-        $files = $user->cutJobs()->whereNotNull('file_path')->pluck('file_path');
-        foreach ($files as $path) {
-            if (Storage::exists($path)) {
-                $storageMb += Storage::size($path);
-            }
-        }
-        $storageMb = round($storageMb / 1024 / 1024, 1);
+        // Single aggregate query — replaces N Storage::exists()+size() round-trips
+        // plus 3 separate COUNTs. `file_size_bytes` is captured at upload time.
+        $row = $user->cutJobs()
+            ->selectRaw('COUNT(*) AS total_jobs')
+            ->selectRaw("SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed")
+            ->selectRaw('SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS this_month', [$monthStart])
+            ->selectRaw('COALESCE(SUM(file_size_bytes), 0) AS storage_bytes')
+            ->first();
 
         return [
-            'total_jobs' => $totalJobs,
-            'completed' => $completed,
-            'this_month' => $thisMonth,
-            'storage_mb' => $storageMb,
+            'total_jobs' => (int) ($row->total_jobs ?? 0),
+            'completed' => (int) ($row->completed ?? 0),
+            'this_month' => (int) ($row->this_month ?? 0),
+            'storage_mb' => round(((int) ($row->storage_bytes ?? 0)) / 1024 / 1024, 1),
         ];
     }
 
@@ -55,8 +49,7 @@ new #[Title('Dashboard')] class extends Component {
         $user = auth()->user();
 
         $query = $user->cutJobs()
-            ->whereMonth('created_at', now()->month)
-            ->whereYear('created_at', now()->year)
+            ->where('created_at', '>=', now()->startOfMonth())
             ->whereNot('status', 'failed');
 
         if ($user->usage_reset_at && $user->usage_reset_at->isCurrentMonth()) {
@@ -264,7 +257,7 @@ new #[Title('Dashboard')] class extends Component {
                                     size="sm"
                                     variant="ghost"
                                     icon="arrow-down-tray"
-                                    :href="URL::signedRoute('jobs.download', $job)"
+                                    :href="URL::temporarySignedRoute('jobs.download', now()->addHours(24), ['cutJob' => $job->id])"
                                 >
                                     Download
                                 </flux:button>

@@ -20,22 +20,19 @@ class CleanupExpiredJobs extends Command
         $deleted = 0;
         $failed = 0;
 
-        // Purge completed jobs past their retention window (expires_at)
-        CutJob::query()
-            ->where('expires_at', '<', now())
-            ->whereNot('status', 'expired')
-            ->chunkById(100, function ($jobs) use (&$deleted, &$failed): void {
-                foreach ($jobs as $job) {
-                    $this->purgeJob($job, $deleted, $failed);
-                }
-            });
-
-        // Purge failed jobs older than the configured retention hours
         $failedCutoff = now()->subHours(config('cutjob.failed_retention_hours', 3));
 
+        // Combine both purge criteria into one query so a failed job that is
+        // also past its expires_at window is not counted (and processed) twice.
         CutJob::query()
-            ->where('status', 'failed')
-            ->where('created_at', '<', $failedCutoff)
+            ->whereNot('status', 'expired')
+            ->where(function ($q) use ($failedCutoff): void {
+                $q->where('expires_at', '<', now())
+                    ->orWhere(function ($q) use ($failedCutoff): void {
+                        $q->where('status', 'failed')
+                            ->where('created_at', '<', $failedCutoff);
+                    });
+            })
             ->chunkById(100, function ($jobs) use (&$deleted, &$failed): void {
                 foreach ($jobs as $job) {
                     $this->purgeJob($job, $deleted, $failed);
