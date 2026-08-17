@@ -21,18 +21,46 @@ return new class extends Migration
                 $table->text('error_detail')->nullable();
             }
 
-            $table->index(['user_id', 'created_at'], 'cut_jobs_user_created_idx');
-            $table->index(['user_id', 'status'], 'cut_jobs_user_status_idx');
-            $table->index(['status', 'expires_at'], 'cut_jobs_status_expires_idx');
+            try {
+                $table->index(['user_id', 'created_at'], 'cut_jobs_user_created_idx');
+            } catch (Throwable $e) {
+                // index likely already exists
+            }
+
+            try {
+                $table->index(['user_id', 'status'], 'cut_jobs_user_status_idx');
+            } catch (Throwable $e) {
+                // index likely already exists
+            }
+
+            try {
+                $table->index(['status', 'expires_at'], 'cut_jobs_status_expires_idx');
+            } catch (Throwable $e) {
+                // index likely already exists
+            }
         });
     }
 
     public function down(): void
     {
         Schema::table('cut_jobs', function (Blueprint $table): void {
-            $table->dropIndex('cut_jobs_user_created_idx');
-            $table->dropIndex('cut_jobs_user_status_idx');
-            $table->dropIndex('cut_jobs_status_expires_idx');
+            try {
+                $table->dropIndex('cut_jobs_user_created_idx');
+            } catch (Throwable $e) {
+                // index likely already dropped
+            }
+
+            try {
+                $table->dropIndex('cut_jobs_user_status_idx');
+            } catch (Throwable $e) {
+                // index likely already dropped
+            }
+
+            try {
+                $table->dropIndex('cut_jobs_status_expires_idx');
+            } catch (Throwable $e) {
+                // index likely already dropped
+            }
 
             if (Schema::hasColumn('cut_jobs', 'pipeline_step')) {
                 $table->dropColumn('pipeline_step');

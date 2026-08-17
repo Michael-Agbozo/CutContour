@@ -11,14 +11,22 @@ return new class extends Migration
         Schema::table('notifications', function (Blueprint $table): void {
             // Hot query path: notification bell polls WHERE notifiable_id = ? AND read_at IS NULL.
             // morphs() already covers (notifiable_type, notifiable_id) so extend it with read_at.
-            $table->index(['notifiable_type', 'notifiable_id', 'read_at'], 'notifications_notifiable_read_idx');
+            try {
+                $table->index(['notifiable_type', 'notifiable_id', 'read_at'], 'notifications_notifiable_read_idx');
+            } catch (Throwable $e) {
+                // index likely already exists
+            }
         });
     }
 
     public function down(): void
     {
         Schema::table('notifications', function (Blueprint $table): void {
-            $table->dropIndex('notifications_notifiable_read_idx');
+            try {
+                $table->dropIndex('notifications_notifiable_read_idx');
+            } catch (Throwable $e) {
+                // index likely already dropped
+            }
         });
     }
 };
