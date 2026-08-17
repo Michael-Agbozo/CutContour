@@ -9,9 +9,21 @@ new #[Title('Notifications')] class extends Component {
     use WithPagination;
 
     #[Computed]
-    public function unread(): \Illuminate\Database\Eloquent\Collection
+    public function unread(): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
-        return auth()->user()->unreadNotifications()->latest()->get();
+        return auth()->user()
+            ->unreadNotifications()
+            ->latest()
+            ->paginate(20, pageName: 'unread_page');
+    }
+
+    #[Computed]
+    public function readItems(): \Illuminate\Contracts\Pagination\LengthAwarePaginator
+    {
+        return auth()->user()
+            ->readNotifications()
+            ->latest()
+            ->paginate(15, pageName: 'read_page');
     }
 
     public function markAsRead(string $id): void
@@ -38,14 +50,14 @@ new #[Title('Notifications')] class extends Component {
             $notification->markAsRead();
         }
 
-        unset($this->unread);
+        unset($this->unread, $this->readItems);
         $this->dispatch('notification-count-changed');
     }
 
     public function markAllAsRead(): void
     {
         auth()->user()->unreadNotifications()->update(['read_at' => now()]);
-        unset($this->unread);
+        unset($this->unread, $this->readItems);
         $this->dispatch('notification-count-changed');
     }
 
@@ -56,7 +68,7 @@ new #[Title('Notifications')] class extends Component {
         if ($notification) {
             $wasUnread = ! $notification->read_at;
             $notification->delete();
-            unset($this->unread);
+            unset($this->unread, $this->readItems);
 
             if ($wasUnread) {
                 $this->dispatch('notification-count-changed');
@@ -154,7 +166,7 @@ new #[Title('Notifications')] class extends Component {
     </div>
 
     {{-- ── Read section ────────────────────────────────────────────── --}}
-    @php $readPaginator = auth()->user()->readNotifications()->latest()->paginate(15, pageName: 'read_page'); @endphp
+    @php $readPaginator = $this->readItems; @endphp
     @if($readPaginator->total() > 0)
     <div>
         <div class="mb-3 flex items-center gap-2">

@@ -3,6 +3,7 @@
 use App\Models\CutJob;
 use App\Models\User;
 use App\Permission;
+use Illuminate\Support\Facades\Cache;
 
 /*
 |--------------------------------------------------------------------------
@@ -217,25 +218,29 @@ test('logs page shows log entries excluding ProcessCutJob', function () {
     $logPath = storage_path('logs/laravel.log');
     $original = file_exists($logPath) ? file_get_contents($logPath) : '';
 
-    // Write test log entries
-    file_put_contents($logPath, implode("\n", [
-        '[2026-04-18 10:00:00] production.ERROR: ProcessCutJob: failed {"job_id":"abc"}',
-        '[2026-04-18 10:01:00] production.ERROR: Something else went wrong {"context":"test"}',
-        '[2026-04-18 10:02:00] production.WARNING: Disk space low {"free":"1GB"}',
-    ])."\n");
+    // Ensure the real log file is restored no matter how the assertions fare
+    // (previously the restore was only reached on the happy path).
+    try {
+        Cache::flush();
 
-    $response = Livewire\Livewire::actingAs($admin)
-        ->test('pages::admin.logs');
+        file_put_contents($logPath, implode("\n", [
+            '[2026-04-18 10:00:00] production.ERROR: ProcessCutJob: failed {"job_id":"abc"}',
+            '[2026-04-18 10:01:00] production.ERROR: Something else went wrong {"context":"test"}',
+            '[2026-04-18 10:02:00] production.WARNING: Disk space low {"free":"1GB"}',
+        ])."\n");
 
-    $entries = $response->get('entries');
+        $response = Livewire\Livewire::actingAs($admin)
+            ->test('pages::admin.logs');
 
-    // ProcessCutJob entry should be filtered out
-    expect($entries)->toHaveCount(2)
-        ->and($entries[0]['message'])->toContain('Disk space low')
-        ->and($entries[1]['message'])->toContain('Something else went wrong');
+        $entries = $response->get('entries');
 
-    // Restore original log
-    file_put_contents($logPath, $original);
+        expect($entries)->toHaveCount(2)
+            ->and($entries[0]['message'])->toContain('Disk space low')
+            ->and($entries[1]['message'])->toContain('Something else went wrong');
+    } finally {
+        file_put_contents($logPath, $original);
+        Cache::flush();
+    }
 });
 
 test('logs page filters by level', function () {
@@ -244,22 +249,27 @@ test('logs page filters by level', function () {
     $logPath = storage_path('logs/laravel.log');
     $original = file_exists($logPath) ? file_get_contents($logPath) : '';
 
-    file_put_contents($logPath, implode("\n", [
-        '[2026-04-18 10:00:00] production.ERROR: Test error message',
-        '[2026-04-18 10:01:00] production.WARNING: Test warning message',
-        '[2026-04-18 10:02:00] production.INFO: Test info message',
-    ])."\n");
+    try {
+        Cache::flush();
 
-    $response = Livewire\Livewire::actingAs($admin)
-        ->test('pages::admin.logs')
-        ->set('level', 'error');
+        file_put_contents($logPath, implode("\n", [
+            '[2026-04-18 10:00:00] production.ERROR: Test error message',
+            '[2026-04-18 10:01:00] production.WARNING: Test warning message',
+            '[2026-04-18 10:02:00] production.INFO: Test info message',
+        ])."\n");
 
-    $entries = $response->get('entries');
+        $response = Livewire\Livewire::actingAs($admin)
+            ->test('pages::admin.logs')
+            ->set('level', 'error');
 
-    expect($entries)->toHaveCount(1)
-        ->and($entries[0]['level'])->toBe('error');
+        $entries = $response->get('entries');
 
-    file_put_contents($logPath, $original);
+        expect($entries)->toHaveCount(1)
+            ->and($entries[0]['level'])->toBe('error');
+    } finally {
+        file_put_contents($logPath, $original);
+        Cache::flush();
+    }
 });
 
 /*

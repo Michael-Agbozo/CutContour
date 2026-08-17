@@ -58,8 +58,12 @@
                 {{-- Recent Jobs --}}
                 <flux:sidebar.group :heading="__('Recent Jobs')" icon="clock" expandable>
                     @php
-                        $recentJobs = [];
-                        // Replace with: auth()->user()->cutJobs()->latest()->take(5)->get()
+                        $recentJobs = auth()->user()
+                            ->cutJobs()
+                            ->select(['id', 'original_name', 'job_name', 'status'])
+                            ->latest()
+                            ->take(5)
+                            ->get();
                     @endphp
 
                     @forelse($recentJobs as $job)
@@ -244,7 +248,8 @@
                     <flux:menu.item :href="route('profile.edit')" icon="user" wire:navigate>{{ __('Profile') }}</flux:menu.item>
                     <flux:menu.item :href="route('billing.edit')" icon="credit-card" wire:navigate>{{ __('Billing') }}</flux:menu.item>
                     <flux:menu.separator />
-                    <form method="POST" action="{{ route('logout') }}" class="w-full" onsubmit="event.preventDefault(); var f=this; document.dispatchEvent(new CustomEvent('toast-show', { detail: { duration: 2500, slots: { text: 'Successfully logged out. See you next time!' }, dataset: { variant: 'success' } } })); setTimeout(() => f.submit(), 2000);">
+                    {{-- Submit synchronously so a mid-flight tab close still logs the user out. --}}
+                    <form method="POST" action="{{ route('logout') }}" class="w-full">
                         @csrf
                         <flux:menu.item as="button" type="submit" icon="arrow-right-start-on-rectangle" class="w-full cursor-pointer">
                             {{ __('Log out') }}

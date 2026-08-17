@@ -93,6 +93,40 @@ return [
         'potrace' => env('POTRACE_BINARY', 'potrace'),
         'inkscape' => env('INKSCAPE_BINARY', 'inkscape'),
         'gs' => env('GHOSTSCRIPT_BINARY', 'gs'),
+        'qpdf' => env('QPDF_BINARY', 'qpdf'),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Cut Path Spot Color
+    |--------------------------------------------------------------------------
+    |
+    | Print RIPs interpret a named spot color separation as a cut path. Default
+    | is "CutContour" (Roland VersaWorks convention) with CMYK 0/100/0/0 as the
+    | on-screen fallback. Override per print house — Mimaki uses "CutContour1",
+    | Cricut uses "CutMark", etc.
+    |
+    */
+    'spot_color' => [
+        'name' => env('CUTJOB_SPOT_COLOR_NAME', 'CutContour'),
+        'cmyk' => [
+            (float) env('CUTJOB_SPOT_COLOR_C', 0),
+            (float) env('CUTJOB_SPOT_COLOR_M', 100),
+            (float) env('CUTJOB_SPOT_COLOR_Y', 0),
+            (float) env('CUTJOB_SPOT_COLOR_K', 0),
+        ],
+        'hex_fallback' => env('CUTJOB_SPOT_COLOR_HEX', '#ec008c'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Cut Path Line Width
+    |--------------------------------------------------------------------------
+    |
+    | Stroke width for the cut path, in points. 0.25pt is the standard hairline
+    | used by most cutter drivers.
+    |
+    */
+    'cut_line_width_pt' => (float) env('CUTJOB_CUT_LINE_WIDTH_PT', 0.25),
 
 ];

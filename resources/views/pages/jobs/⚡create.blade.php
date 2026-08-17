@@ -538,9 +538,25 @@ new #[Title('New Job')] class extends Component {
                 <div class="relative overflow-hidden rounded-lg bg-white shadow-2xl ring-1 ring-zinc-900/10 dark:bg-zinc-900 dark:ring-white/5"
                      style="min-width: 240px; min-height: 300px;">
                     @if($file)
-                        <img src="{{ $file->temporaryUrl() }}"
-                             alt="Uploaded artwork"
-                             class="block max-h-[55vh] w-full object-contain" />
+                        @php
+                            // Livewire's temporaryUrl() only supports raster images on the
+                            // local disk — PDF/SVG/AI would 404. Fall back to a document icon.
+                            $ext = strtolower($file->getClientOriginalExtension());
+                            $isImage = in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp'], true);
+                        @endphp
+                        @if($isImage)
+                            <img src="{{ $file->temporaryUrl() }}"
+                                 alt="Uploaded artwork"
+                                 class="block max-h-[55vh] w-full object-contain" />
+                        @else
+                            <div class="flex h-[55vh] w-full flex-col items-center justify-center gap-3 bg-zinc-50 text-zinc-400 dark:bg-zinc-950 dark:text-zinc-600">
+                                <flux:icon name="document" class="size-16" />
+                                <div class="text-center">
+                                    <p class="text-xs font-semibold uppercase tracking-wide">{{ $ext }} file</p>
+                                    <p class="mt-1 max-w-xs truncate px-4 text-[11px]">{{ $file->getClientOriginalName() }}</p>
+                                </div>
+                            </div>
+                        @endif
                     @endif
 
                     {{-- Dashed cut-path border — uses custom spot colour --}}

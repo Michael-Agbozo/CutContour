@@ -1,3 +1,8 @@
+{{--
+    The `action` prop is interpolated verbatim into an Alpine @click handler.
+    ONLY pass hardcoded Alpine/JS expressions here (e.g. "$wire.deleteJob('abc')").
+    NEVER pass user-controlled strings — that becomes DOM XSS.
+--}}
 @props([
     'action',
     'label' => null,
