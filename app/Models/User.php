@@ -59,4 +59,17 @@ class User extends Authenticatable implements MustVerifyEmailContract
     {
         return $this->hasMany(CutJob::class);
     }
+
+    /**
+     * Mark every unread notification for this user as read.
+     *
+     * Bulk update via the query builder — bypasses model events, which is
+     * intentional for performance. Kept as a single method (rather than
+     * inlined in the bell and notifications page) so a future `read_at`
+     * observer or audit-log hook only needs to be wired here.
+     */
+    public function markAllNotificationsRead(): int
+    {
+        return $this->unreadNotifications()->update(['read_at' => now()]);
+    }
 }

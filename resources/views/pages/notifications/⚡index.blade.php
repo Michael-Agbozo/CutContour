@@ -56,7 +56,7 @@ new #[Title('Notifications')] class extends Component {
 
     public function markAllAsRead(): void
     {
-        auth()->user()->unreadNotifications()->update(['read_at' => now()]);
+        auth()->user()->markAllNotificationsRead();
         unset($this->unread, $this->readItems);
         $this->dispatch('notification-count-changed');
     }

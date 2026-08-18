@@ -39,7 +39,7 @@ new class extends Component {
 
     public function markAllAsRead(): void
     {
-        auth()->user()->unreadNotifications()->update(['read_at' => now()]);
+        auth()->user()->markAllNotificationsRead();
         $this->unreadCount = 0;
 
         $this->dispatch('notification-count-changed');

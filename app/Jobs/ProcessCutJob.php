@@ -303,12 +303,20 @@ class ProcessCutJob implements ShouldQueue
      */
     private function userSafeMessage(Throwable $e): string
     {
-        if ($e instanceof RuntimeException && str_contains($e->getMessage(), 'AI ')) {
-            return 'AI analysis was unavailable. Please try again or upload a different file.';
-        }
+        if ($e instanceof RuntimeException) {
+            $msg = $e->getMessage();
 
-        if ($e instanceof RuntimeException && str_contains($e->getMessage(), 'too large')) {
-            return 'The file was too large to process. Please upload a smaller file.';
+            if (str_contains($msg, 'password-protected') || str_contains($msg, 'encrypted')) {
+                return 'This PDF is password-protected. Please remove the password and try again.';
+            }
+
+            if (str_contains($msg, 'AI ')) {
+                return 'AI analysis was unavailable. Please try again or upload a different file.';
+            }
+
+            if (str_contains($msg, 'too large')) {
+                return 'The file was too large to process. Please upload a smaller file.';
+            }
         }
 
         return 'Processing failed — please try a different file. Our team has been notified.';
@@ -341,7 +349,7 @@ class ProcessCutJob implements ShouldQueue
      *
      * @throws RuntimeException
      */
-    private function rasterizePdfPreview(string $sourcePath, string $workDir): string
+    protected function rasterizePdfPreview(string $sourcePath, string $workDir): string
     {
         if (! is_dir($workDir) && ! mkdir($workDir, 0755, true) && ! is_dir($workDir)) {
             throw new RuntimeException("Failed to create work dir: {$workDir}");
@@ -349,22 +357,71 @@ class ProcessCutJob implements ShouldQueue
 
         $previewPath = $workDir.'/preview.png';
         $gs = config('cutjob.binaries.gs', 'gs');
+        $dpi = $this->pickPreviewDpi($sourcePath, $gs);
 
         $output = [];
         $code = 0;
 
         exec(sprintf(
-            '%s -dSAFER -dBATCH -dNOPAUSE -dFirstPage=1 -dLastPage=1 -sDEVICE=png16m -r150 -o %s %s 2>&1',
+            '%s -dSAFER -dBATCH -dNOPAUSE -dPDFSTOPONERROR -dFirstPage=1 -dLastPage=1 -sDEVICE=png16m -r%d -o %s %s 2>&1',
             escapeshellarg($gs),
+            $dpi,
             escapeshellarg($previewPath),
             escapeshellarg($sourcePath),
         ), $output, $code);
 
         if ($code !== 0) {
-            throw new RuntimeException('PDF preview rasterisation failed: '.implode(' ', $output));
+            $stderr = implode(' ', $output);
+
+            // Recognise password-protected PDFs so userSafeMessage can map to
+            // a specific user-facing hint instead of the generic "try a
+            // different file" fallback.
+            if (stripos($stderr, 'password') !== false || stripos($stderr, 'encrypted') !== false) {
+                throw new RuntimeException('PDF preview rasterisation failed: file is password-protected or encrypted.');
+            }
+
+            throw new RuntimeException('PDF preview rasterisation failed: '.$stderr);
         }
 
         return $previewPath;
+    }
+
+    /**
+     * Pick a Ghostscript render DPI that targets ~2000px on the longest edge.
+     * Hardcoded 150 DPI over-rendered A0 posters (90 MB decoded, IM then
+     * clamped to 2048) and starved business-card PDFs of mask detail.
+     * Clamped 72..300 for sanity.
+     */
+    private function pickPreviewDpi(string $sourcePath, string $gs): int
+    {
+        $default = 150;
+
+        $output = [];
+        $code = 0;
+        exec(sprintf(
+            '%s -dSAFER -dBATCH -dNOPAUSE -dFirstPage=1 -dLastPage=1 -q -sDEVICE=bbox %s 2>&1',
+            escapeshellarg($gs),
+            escapeshellarg($sourcePath),
+        ), $output, $code);
+
+        if ($code !== 0) {
+            return $default;
+        }
+
+        $text = implode("\n", $output);
+        if (! preg_match('/%%HiResBoundingBox:\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/', $text, $m)) {
+            return $default;
+        }
+
+        $widthPt = (float) $m[3] - (float) $m[1];
+        $heightPt = (float) $m[4] - (float) $m[2];
+        $longestInches = max($widthPt, $heightPt) / 72.0;
+
+        if ($longestInches <= 0) {
+            return $default;
+        }
+
+        return (int) max(72, min(300, round(2000 / $longestInches)));
     }
 
     /**
