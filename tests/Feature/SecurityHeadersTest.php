@@ -8,6 +8,9 @@ test('security response headers are present on web responses', function () {
     $response->assertHeader('X-Content-Type-Options', 'nosniff');
     $response->assertHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     $response->assertHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    $response->assertHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    $response->assertHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    $response->assertHeader('Cross-Origin-Resource-Policy', 'same-origin');
 });
 
 test('HSTS header is absent outside production', function () {

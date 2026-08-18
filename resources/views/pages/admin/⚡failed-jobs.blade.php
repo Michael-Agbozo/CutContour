@@ -52,16 +52,19 @@ new #[Title('Failed Jobs — Admin')] class extends Component {
             return;
         }
 
-        // forceFill bypasses $fillable: several diagnostic columns
-        // (error_message, error_detail, processing_duration_ms, pipeline_step)
+        // forceFill bypasses $fillable: several diagnostic and success columns
         // are guarded from mass assignment, but we intentionally clear them
-        // here so a retry does not inherit stale failure state.
+        // here so a retry does not inherit stale state from the prior attempt
+        // (either failure diagnostics OR any half-written success artefacts).
         $job->forceFill([
             'status' => 'processing',
             'error_message' => null,
             'error_detail' => null,
             'processing_duration_ms' => null,
             'pipeline_step' => 0,
+            'output_path' => null,
+            'ai_used' => false,
+            'confidence_score' => null,
         ])->save();
 
         ProcessCutJob::dispatch($job);

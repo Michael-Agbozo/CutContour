@@ -62,9 +62,12 @@ class PdfService
         $outputFilename = $this->buildFilename($originalName, $width, $height);
         $outputPath = $outputDir.'/'.$outputFilename;
 
-        // Step 1: Ensure artwork is a PDF.
+        // Step 1: Ensure artwork is a PDF. For raster sources we generate a
+        // fresh PDF; for PDF sources we use the file as-is.
         $artworkPdf = $outputDir.'/artwork.pdf';
-        if (strtolower(pathinfo($originalPath, PATHINFO_EXTENSION)) === 'pdf') {
+        $sourceIsPdf = strtolower(pathinfo($originalPath, PATHINFO_EXTENSION)) === 'pdf';
+
+        if ($sourceIsPdf) {
             $artworkPdf = $originalPath;
         } else {
             $this->exec(sprintf(
@@ -75,8 +78,30 @@ class PdfService
             ), 'Artwork to PDF conversion failed');
         }
 
-        // Step 2: Emit the cut path PDF in the CutContour spot color.
-        $cutPathPdf = $this->writeCutPathPdf($svgPath, $outputDir, $width, $height);
+        // Step 2: Determine the cut path PDF page size in POINTS.
+        //   • Raster source: SVG path coords are in preview-pixel space, so we
+        //     convert pixels → points at the pipeline DPI (72/dpi scale).
+        //   • PDF source:    SVG path coords are still in preview-pixel space
+        //     (the mask was generated from the rasterised preview), so the SVG
+        //     coord range is preview-pixel-sized — but the OUTPUT canvas must
+        //     match the artwork PDF's real MediaBox in points, otherwise the
+        //     qpdf overlay clips/scales the cut path to the wrong dimensions.
+        //     We use the MediaBox for the page size, and scale by (mediaboxPt /
+        //     previewPx) instead of (72/dpi) so the cut path fills the artwork.
+        $dpi = (int) config('cutjob.dpi', 300);
+        if ($sourceIsPdf) {
+            $mediaBox = $this->pdfMediaBox($artworkPdf); // [w_pt, h_pt]
+            $widthPt = $mediaBox[0];
+            $heightPt = $mediaBox[1];
+            $scaleX = $widthPt / max(1, $width);
+            $scaleY = $heightPt / max(1, $height);
+        } else {
+            $widthPt = $width / $dpi * 72.0;
+            $heightPt = $height / $dpi * 72.0;
+            $scaleX = $scaleY = 72.0 / $dpi;
+        }
+
+        $cutPathPdf = $this->writeCutPathPdf($svgPath, $outputDir, $widthPt, $heightPt, $scaleX, $scaleY);
 
         // Step 3: Overlay onto artwork — real composite, not append.
         $this->overlay($artworkPdf, $cutPathPdf, $outputPath);
@@ -102,8 +127,14 @@ class PdfService
      *
      * @throws RuntimeException
      */
-    private function writeCutPathPdf(string $svgPath, string $outputDir, int $widthPx, int $heightPx): string
-    {
+    private function writeCutPathPdf(
+        string $svgPath,
+        string $outputDir,
+        float $widthPt,
+        float $heightPt,
+        float $scaleX,
+        float $scaleY,
+    ): string {
         $svg = @file_get_contents($svgPath);
         if ($svg === false) {
             throw new RuntimeException("Cut path SVG not readable: {$svgPath}");
@@ -114,11 +145,6 @@ class PdfService
             throw new RuntimeException('Cut path SVG contains no <path d="…"/> data.');
         }
 
-        $dpi = (int) config('cutjob.dpi', 300);
-        $widthPt = $widthPx / $dpi * 72.0;
-        $heightPt = $heightPx / $dpi * 72.0;
-        $scale = 72.0 / $dpi;
-
         $psPath = $outputDir.'/cutpath.ps';
         $pdfPath = $outputDir.'/cutpath.pdf';
 
@@ -127,7 +153,7 @@ class PdfService
             $psPathData .= $this->svgPathToPostScript($data)."\n";
         }
 
-        $ps = $this->buildSpotColorPostScript($widthPt, $heightPt, $scale, $psPathData);
+        $ps = $this->buildSpotColorPostScript($widthPt, $heightPt, $scaleX, $scaleY, $psPathData);
 
         if (file_put_contents($psPath, $ps) === false) {
             throw new RuntimeException("Failed to write cut path PostScript to {$psPath}");
@@ -168,8 +194,13 @@ class PdfService
      * strokes the given path in it. Alternate color is the CMYK fallback for
      * on-screen viewers that don't render separations.
      */
-    private function buildSpotColorPostScript(float $widthPt, float $heightPt, float $scale, string $pathBody): string
-    {
+    private function buildSpotColorPostScript(
+        float $widthPt,
+        float $heightPt,
+        float $scaleX,
+        float $scaleY,
+        string $pathBody,
+    ): string {
         [$c, $m, $y, $k] = array_map(fn ($v) => max(0.0, min(1.0, $v / 100.0)), $this->spotColorCmyk);
         $safeName = preg_replace('/[^A-Za-z0-9]/', '', $this->spotColorName) ?: 'CutContour';
 
@@ -196,9 +227,10 @@ class PdfService
 1 setlinejoin
 [] 0 setdash
 
-% User space is in points. Path data is in raster pixels at {$scale} pt/px.
+% User space is in points. Path data is in raster-pixel coordinates; scale
+% converts them to fill the {$widthPt}x{$heightPt} pt page.
 gsave
-{$scale} {$scale} scale
+{$scaleX} {$scaleY} scale
 
 newpath
 {$pathBody}
@@ -210,6 +242,37 @@ PS;
     }
 
     /**
+     * Read a PDF's page-1 MediaBox in points via Ghostscript's bbox device.
+     * Returns [widthPt, heightPt]. Throws if the box can't be read.
+     */
+    private function pdfMediaBox(string $pdfPath): array
+    {
+        $output = [];
+        $code = 0;
+        exec(sprintf(
+            '%s -dSAFER -dBATCH -dNOPAUSE -dFirstPage=1 -dLastPage=1 -q -sDEVICE=bbox %s 2>&1',
+            escapeshellarg($this->gs),
+            escapeshellarg($pdfPath),
+        ), $output, $code);
+
+        $text = implode("\n", $output);
+
+        // gs bbox device prints "%%HiResBoundingBox: llx lly urx ury"
+        if (! preg_match('/%%HiResBoundingBox:\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/', $text, $m)) {
+            throw new RuntimeException("Unable to read PDF MediaBox from {$pdfPath}: {$text}");
+        }
+
+        $widthPt = (float) $m[3] - (float) $m[1];
+        $heightPt = (float) $m[4] - (float) $m[2];
+
+        if ($widthPt <= 0 || $heightPt <= 0) {
+            throw new RuntimeException("Invalid PDF MediaBox dimensions {$widthPt}x{$heightPt} in {$pdfPath}");
+        }
+
+        return [$widthPt, $heightPt];
+    }
+
+    /**
      * Convert a subset of SVG path data (produced by Potrace and by the AI
      * agent) to PostScript path operators. Supports M/L/C/Z, absolute and
      * relative, with implicit repeated operators.
@@ -218,8 +281,11 @@ PS;
     {
         // Split packed numbers like "1.5-2.3" or "4+5" into "1.5 -2.3" and
         // "4 +5" so `is_numeric()` accepts each token — otherwise readNum()
-        // returns null and the path collapses to a point.
-        $d = preg_replace('/([0-9.])([-+])/', '$1 $2', $d);
+        // returns null and the path collapses to a point. The negative lookbehind
+        // on e/E preserves scientific-notation exponents ("1.5e-5" must NOT
+        // become "1.5e -5", which would then fail is_numeric on the "1.5e"
+        // stub and throw at the unsupported-op guard).
+        $d = preg_replace('/([0-9.])(?<![eE])([-+])/', '$1 $2', $d);
         // Insert a space before each command letter so tokens split cleanly.
         $normalized = preg_replace('/([MmLlCcZzHhVvSsQqTtAa])/', ' $1 ', $d);
         $normalized = preg_replace('/,/', ' ', $normalized);
@@ -231,13 +297,18 @@ PS;
         $cmd = '';
         $i = 0;
 
-        $readNum = function () use (&$tokens, &$i): ?float {
+        // Strict operand reader: throws when a required operand is missing or
+        // non-numeric, so a partially-corrupt input can't produce a
+        // real-looking-but-wrong path (the silent `?? previous` fallback used
+        // to substitute the previous coord, so a bad `C x1 y1 x2 <junk>`
+        // emitted a curveto with 3 default coords — no error raised).
+        $readNum = function () use (&$tokens, &$i, &$cmd): float {
             if (! isset($tokens[$i])) {
-                return null;
+                throw new RuntimeException("SVG path operand for '{$cmd}' missing at position {$i}");
             }
             $v = $tokens[$i];
             if (! is_numeric($v)) {
-                return null;
+                throw new RuntimeException("SVG path operand for '{$cmd}' is not numeric at position {$i}: '{$v}'");
             }
             $i++;
 
@@ -260,61 +331,68 @@ PS;
                 continue;
             }
 
+            // SVG operators the parser deliberately does not implement. Fail
+            // fast with a clear message rather than silently corrupting the
+            // path (was previously either garbling coords or infinite-looping).
+            if (in_array($token, ['S', 's', 'Q', 'q', 'T', 't', 'A', 'a'], true)) {
+                throw new RuntimeException("Unsupported SVG path operator: {$token}");
+            }
+
             switch ($cmd) {
                 case 'M':
-                    $x = $readNum() ?? $x;
-                    $y = $readNum() ?? $y;
+                    $x = $readNum();
+                    $y = $readNum();
                     $out[] = sprintf('%.4f %.4f moveto', $x, $y);
                     $cmd = 'L';
                     break;
                 case 'm':
-                    $x += $readNum() ?? 0;
-                    $y += $readNum() ?? 0;
+                    $x += $readNum();
+                    $y += $readNum();
                     $out[] = sprintf('%.4f %.4f moveto', $x, $y);
                     $cmd = 'l';
                     break;
                 case 'L':
-                    $x = $readNum() ?? $x;
-                    $y = $readNum() ?? $y;
+                    $x = $readNum();
+                    $y = $readNum();
                     $out[] = sprintf('%.4f %.4f lineto', $x, $y);
                     break;
                 case 'l':
-                    $x += $readNum() ?? 0;
-                    $y += $readNum() ?? 0;
+                    $x += $readNum();
+                    $y += $readNum();
                     $out[] = sprintf('%.4f %.4f lineto', $x, $y);
                     break;
                 case 'H':
-                    $x = $readNum() ?? $x;
+                    $x = $readNum();
                     $out[] = sprintf('%.4f %.4f lineto', $x, $y);
                     break;
                 case 'h':
-                    $x += $readNum() ?? 0;
+                    $x += $readNum();
                     $out[] = sprintf('%.4f %.4f lineto', $x, $y);
                     break;
                 case 'V':
-                    $y = $readNum() ?? $y;
+                    $y = $readNum();
                     $out[] = sprintf('%.4f %.4f lineto', $x, $y);
                     break;
                 case 'v':
-                    $y += $readNum() ?? 0;
+                    $y += $readNum();
                     $out[] = sprintf('%.4f %.4f lineto', $x, $y);
                     break;
                 case 'C':
-                    $x1 = $readNum() ?? 0;
-                    $y1 = $readNum() ?? 0;
-                    $x2 = $readNum() ?? 0;
-                    $y2 = $readNum() ?? 0;
-                    $x = $readNum() ?? $x;
-                    $y = $readNum() ?? $y;
+                    $x1 = $readNum();
+                    $y1 = $readNum();
+                    $x2 = $readNum();
+                    $y2 = $readNum();
+                    $x = $readNum();
+                    $y = $readNum();
                     $out[] = sprintf('%.4f %.4f %.4f %.4f %.4f %.4f curveto', $x1, $y1, $x2, $y2, $x, $y);
                     break;
                 case 'c':
-                    $x1 = $x + ($readNum() ?? 0);
-                    $y1 = $y + ($readNum() ?? 0);
-                    $x2 = $x + ($readNum() ?? 0);
-                    $y2 = $y + ($readNum() ?? 0);
-                    $nx = $x + ($readNum() ?? 0);
-                    $ny = $y + ($readNum() ?? 0);
+                    $x1 = $x + $readNum();
+                    $y1 = $y + $readNum();
+                    $x2 = $x + $readNum();
+                    $y2 = $y + $readNum();
+                    $nx = $x + $readNum();
+                    $ny = $y + $readNum();
                     $out[] = sprintf('%.4f %.4f %.4f %.4f %.4f %.4f curveto', $x1, $y1, $x2, $y2, $nx, $ny);
                     $x = $nx;
                     $y = $ny;

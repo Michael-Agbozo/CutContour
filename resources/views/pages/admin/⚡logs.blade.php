@@ -17,6 +17,13 @@ new #[Title('Error Logs — Admin')] class extends Component {
 
     public int $lines = 100;
 
+    /**
+     * How many lines the raw cache always tails. Keeping this fixed (and above
+     * the largest reasonable `$lines`) means Admin A on 100 lines and Admin B
+     * on 500 lines share the same cache entry — no per-admin cache thrash.
+     */
+    private const RAW_BUFFER_LINES = 1000;
+
     public function updatedSearch(): void
     {
         $this->lines = 100;
@@ -83,10 +90,13 @@ new #[Title('Error Logs — Admin')] class extends Component {
             return collect();
         }
 
-        $cacheKey = 'admin.logs:'.md5($logPath).':'.intdiv(time(), 15).':'.$this->lines;
+        // Cache key deliberately excludes $this->lines — the raw buffer always
+        // tails RAW_BUFFER_LINES so a single cached entry serves every admin
+        // regardless of their "Load more" position.
+        $cacheKey = 'admin.logs:'.md5($logPath).':'.intdiv(time(), 15);
 
         return Cache::remember($cacheKey, 15, function () use ($logPath): Collection {
-            $lines = $this->tailFile($logPath, $this->lines * 5); // Over-read for multiline entries
+            $lines = $this->tailFile($logPath, self::RAW_BUFFER_LINES);
 
             $entries = collect();
             $current = null;

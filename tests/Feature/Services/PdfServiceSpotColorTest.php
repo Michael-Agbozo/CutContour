@@ -28,7 +28,7 @@ test('PostScript prolog uses configured spot color name and defines the separati
     $ref = new ReflectionMethod($service, 'buildSpotColorPostScript');
     $ref->setAccessible(true);
 
-    $ps = $ref->invoke($service, 612.0, 792.0, 0.24, '100 100 moveto 200 200 lineto');
+    $ps = $ref->invoke($service, 612.0, 792.0, 0.24, 0.24, '100 100 moveto 200 200 lineto');
 
     expect($ps)
         ->toContain('/Separation')
@@ -79,7 +79,7 @@ test('spot color CMYK values from config are normalised into the tint transform'
     $ref = new ReflectionMethod($service, 'buildSpotColorPostScript');
     $ref->setAccessible(true);
 
-    $ps = $ref->invoke($service, 612.0, 792.0, 0.24, '100 100 moveto');
+    $ps = $ref->invoke($service, 612.0, 792.0, 0.24, 0.24, '100 100 moveto');
 
     // 10/100 = 0.1, 90/100 = 0.9, 5/100 = 0.05, 0/100 = 0 — the tint transform
     // must reference the normalised (0..1) floats so RIPs see the right fallback.
@@ -100,7 +100,7 @@ test('spot color name is sanitised in the PostScript comment (no injection via e
     $ref = new ReflectionMethod($service, 'buildSpotColorPostScript');
     $ref->setAccessible(true);
 
-    $ps = $ref->invoke($service, 100.0, 100.0, 1.0, '');
+    $ps = $ref->invoke($service, 100.0, 100.0, 1.0, 1.0, '');
 
     expect($ps)->not->toContain("\nContour /badop")
         ->and($ps)->not->toContain('/badop');

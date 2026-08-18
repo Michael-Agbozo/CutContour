@@ -245,6 +245,10 @@ new #[Title('New Job')] class extends Component {
 
             ProcessCutJob::dispatch($cutJob, $targetWidthPx, $targetHeightPx, $offsetPx);
 
+            // Nudge the sidebar recent-jobs component (and any future subscriber)
+            // to re-fetch so the newly-created job appears immediately.
+            $this->dispatch('notification-count-changed');
+
             $this->currentJobId = $cutJob->id;
         } catch (Throwable $e) {
             $this->errorMessage = get_class($e) === \RuntimeException::class
@@ -272,7 +276,10 @@ new #[Title('New Job')] class extends Component {
             return;
         }
 
-        $this->updateStepsFromPipeline((int) ($cutJob->pipeline_step ?? 0));
+        $this->updateStepsFromPipeline(
+            (int) ($cutJob->pipeline_step ?? 0),
+            completed: $cutJob->status === 'completed',
+        );
 
         if ($cutJob->status === 'completed') {
             $this->outputWidth = $cutJob->width;
@@ -291,10 +298,16 @@ new #[Title('New Job')] class extends Component {
             $this->completedJobId = $cutJob->id;
             $this->currentJobId = null;
             $this->state = 'completed';
+
+            // Refresh subscribers (sidebar recent-jobs, bell) so the completed
+            // state reflects immediately instead of after the next 120s poll.
+            $this->dispatch('notification-count-changed');
         } elseif ($cutJob->status === 'failed') {
             $this->errorMessage = 'Processing failed. This may be due to file complexity. Try a simpler or higher-contrast version.';
             $this->currentJobId = null;
             $this->state = 'failed';
+
+            $this->dispatch('notification-count-changed');
         }
     }
 
@@ -358,36 +371,71 @@ new #[Title('New Job')] class extends Component {
 
     private function resetSteps(): void
     {
+        // One UI row per worker STEP_* constant (plus the Upload row that
+        // completes as soon as generate() dispatches). Any renaming here must be
+        // mirrored in updateStepsFromPipeline()'s explicit STEP_* → index map.
         $this->steps = [
-            ['label' => 'Uploading file',                  'done' => false, 'active' => false],
-            ['label' => 'Preprocessing (ImageMagick)',     'done' => false, 'active' => false],
-            ['label' => 'Confidence check',                'done' => false, 'active' => false],
-            ['label' => 'Vectorising (Potrace)',            'done' => false, 'active' => false],
-            ['label' => 'Assembling CutContour layer',     'done' => false, 'active' => false],
-            ['label' => 'Exporting PDF',                   'done' => false, 'active' => false],
+            ['label' => 'Uploading file',              'done' => false, 'active' => false], // 0
+            ['label' => 'Preprocessing (ImageMagick)', 'done' => false, 'active' => false], // 1 ← STEP_PREPROCESS
+            ['label' => 'Confidence check',            'done' => false, 'active' => false], // 2 ← STEP_CONFIDENCE
+            ['label' => 'AI subject isolation',        'done' => false, 'active' => false], // 3 ← STEP_AI (skipped on Fast Path)
+            ['label' => 'Building mask',               'done' => false, 'active' => false], // 4 ← STEP_MASK
+            ['label' => 'Vectorising (Potrace)',       'done' => false, 'active' => false], // 5 ← STEP_VECTORIZE
+            ['label' => 'Assembling CutContour PDF',   'done' => false, 'active' => false], // 6 ← STEP_ASSEMBLE
         ];
     }
 
     /**
      * Reflect the worker's persisted `pipeline_step` in the UI steps array.
-     * Steps 1..N are marked done; step N+1 is marked active while running.
+     *
+     * Uses an explicit STEP_* → UI-index map (no numeric coupling — worker
+     * constants may reorder without silently mislabelling the UI).
      */
-    private function updateStepsFromPipeline(int $pipelineStep): void
+    private function updateStepsFromPipeline(int $pipelineStep, bool $completed = false): void
     {
-        if ($pipelineStep <= 0 || empty($this->steps)) {
+        if (empty($this->steps)) {
             return;
         }
 
-        // Upload is always done once processing starts.
+        static $stepToUiIndex = [
+            \App\Jobs\ProcessCutJob::STEP_PREPROCESS => 1,
+            \App\Jobs\ProcessCutJob::STEP_CONFIDENCE => 2,
+            \App\Jobs\ProcessCutJob::STEP_AI         => 3,
+            \App\Jobs\ProcessCutJob::STEP_MASK       => 4,
+            \App\Jobs\ProcessCutJob::STEP_VECTORIZE  => 5,
+            \App\Jobs\ProcessCutJob::STEP_ASSEMBLE   => 6,
+        ];
+
+        // On completion, mark every row done so the progress bar hits 100%.
+        if ($completed) {
+            foreach ($this->steps as $i => $_) {
+                $this->steps[$i]['done'] = true;
+                $this->steps[$i]['active'] = false;
+            }
+
+            return;
+        }
+
+        if ($pipelineStep <= 0) {
+            return;
+        }
+
+        // Upload row is always done once the worker has advanced at all.
         $this->steps[0]['done'] = true;
 
-        // Map worker step (1..6) → UI step index (offset by upload row).
-        $uiIndex = min($pipelineStep, count($this->steps) - 1);
-
-        for ($i = 1; $i <= $uiIndex; $i++) {
-            $this->steps[$i]['done'] = $i < $uiIndex;
-            $this->steps[$i]['active'] = $i === $uiIndex;
+        $activeIndex = $stepToUiIndex[$pipelineStep] ?? null;
+        if ($activeIndex === null) {
+            return;
         }
+
+        // Mark rows [1..activeIndex-1] done and activeIndex as running.
+        for ($i = 1; $i < $activeIndex; $i++) {
+            $this->steps[$i]['done'] = true;
+            $this->steps[$i]['active'] = false;
+        }
+
+        $this->steps[$activeIndex]['done'] = false;
+        $this->steps[$activeIndex]['active'] = true;
     }
 };
 
