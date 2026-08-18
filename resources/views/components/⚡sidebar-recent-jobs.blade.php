@@ -8,12 +8,13 @@ new class extends Component {
     /**
      * The five most recent jobs for the signed-in user.
      *
-     * Cached per Livewire component instance so `wire:navigate` transitions and
-     * unrelated re-renders across the app don't re-hit the DB. Actions that mutate
-     * the user's job set (bell notifications firing on job status changes) can
-     * bust this cache by dispatching `notification-count-changed`.
+     * Request-scoped only. A prior version used `cache: true` with a hardcoded key,
+     * which caused a data leak across users (Livewire's `cache: true` writes to the
+     * shared application cache and the key was not scoped to auth()->id(); the first
+     * user to load the sidebar seeded the entry served to every other user until the
+     * TTL expired). Do NOT re-add `cache: true` without a user-scoped key.
      */
-    #[Computed(cache: true, key: 'sidebar-recent-jobs')]
+    #[Computed]
     public function recentJobs(): \Illuminate\Database\Eloquent\Collection
     {
         return auth()->user()->cutJobs()

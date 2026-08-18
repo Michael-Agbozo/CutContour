@@ -388,3 +388,45 @@ test('job is marked failed with a user-safe message and admin detail when pipeli
         ->and($job->error_message)->not->toContain('/usr/bin/convert') // internal path hidden
         ->and($job->error_detail)->toContain('ImageMagick not found');
 });
+
+test('password-protected PDF surfaces a dedicated user-safe error', function () {
+    $user = User::factory()->create();
+    $job = CutJob::factory()->for($user)->create([
+        'file_type' => 'pdf',
+        'original_name' => 'locked.pdf',
+    ]);
+
+    Storage::put($job->file_path, 'fake');
+
+    $imageProcessor = Mockery::mock(ImageProcessingService::class);
+    // Preprocess never runs — rasterizePdfPreview throws first with the
+    // marker message the userSafeMessage sanitizer recognises.
+    $imageProcessor->shouldNotReceive('preprocess');
+
+    // Stub the private rasterizePdfPreview via a subclass so we don't need gs.
+    $subject = new class($job) extends ProcessCutJob
+    {
+        protected function rasterizePdfPreview(string $sourcePath, string $workDir): string
+        {
+            throw new RuntimeException('PDF preview rasterisation failed: file is password-protected or encrypted.');
+        }
+    };
+
+    try {
+        $subject->handle(
+            $imageProcessor,
+            Mockery::mock(ConfidenceService::class),
+            Mockery::mock(AIService::class),
+            Mockery::mock(VectorizationService::class),
+            Mockery::mock(PdfService::class),
+        );
+    } catch (RuntimeException) {
+        // Expected — the job rethrows after recording state.
+    }
+
+    $job->refresh();
+
+    expect($job->status)->toBe('failed')
+        ->and($job->error_message)->toContain('password-protected')
+        ->and($job->error_detail)->toContain('password-protected');
+});

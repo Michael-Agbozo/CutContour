@@ -19,19 +19,22 @@ test('failed job notification uses database channel only', function () {
     expect($notification->via(new stdClass))->toBe(['database']);
 });
 
-test('completed notification database payload includes download_url', function () {
+test('completed notification database payload stores only cut_job_id, never a signed url', function () {
     $job = CutJob::factory()->for(User::factory()->create())->completed()->create();
     $notification = new CutJobNotification($job, 'completed');
 
     $payload = $notification->toDatabase(new stdClass);
 
-    expect($payload['status'])->toBe('completed')
+    // The DB payload MUST NOT contain a signed URL — consumers rebuild the URL
+    // at render time from cut_job_id so notifications don't 403 after the TTL,
+    // and a leaked notifications table can't yield working download links.
+    expect($payload)->not->toHaveKey('download_url')
+        ->and($payload['status'])->toBe('completed')
         ->and($payload['cut_job_id'])->toBe($job->id)
-        ->and($payload['original_name'])->toBe($job->original_name)
-        ->and($payload['download_url'])->toBeString()->toContain('jobs/'.$job->id.'/download');
+        ->and($payload['original_name'])->toBe($job->original_name);
 });
 
-test('failed notification database payload includes error_message and no download_url', function () {
+test('failed notification database payload includes error_message and no download url', function () {
     $job = CutJob::factory()->for(User::factory()->create())->create([
         'status' => 'failed',
         'error_message' => 'Vectorization failed',
@@ -41,7 +44,7 @@ test('failed notification database payload includes error_message and no downloa
     $payload = $notification->toDatabase(new stdClass);
 
     expect($payload['status'])->toBe('failed')
-        ->and($payload['download_url'])->toBeNull()
+        ->and($payload)->not->toHaveKey('download_url')
         ->and($payload['error_message'])->toBe('Vectorization failed');
 });
 
@@ -56,26 +59,16 @@ test('completed job mail notification contains file name in subject', function (
         ->and($mail->actionText)->toBe('Download PDF');
 });
 
-test('database payload download_url has a short TTL (<= 15 minutes)', function () {
+test('database payload does not store any signed download url', function () {
     $user = User::factory()->create();
     $job = CutJob::factory()->for($user)->completed()->create();
 
-    $before = now();
-    $notification = new CutJobNotification($job, 'completed');
-    $payload = $notification->toDatabase($user);
-    $after = now();
+    $payload = (new CutJobNotification($job, 'completed'))->toDatabase($user);
 
-    parse_str(parse_url($payload['download_url'], PHP_URL_QUERY), $query);
-
-    expect($query)->toHaveKey('expires')
-        ->and($query)->toHaveKey('signature');
-
-    $expiresAt = (int) $query['expires'];
-    $maxAllowed = $after->copy()->addMinutes(15)->getTimestamp();
-    $minAllowed = $before->copy()->addMinutes(14)->getTimestamp();
-
-    expect($expiresAt)->toBeLessThanOrEqual($maxAllowed)
-        ->and($expiresAt)->toBeGreaterThanOrEqual($minAllowed);
+    // Consumers rebuild the URL at render time from cut_job_id — see
+    // notification-bell.blade.php and notifications/⚡index.blade.php.
+    expect($payload)->not->toHaveKey('download_url')
+        ->and($payload)->toHaveKey('cut_job_id');
 });
 
 test('mail action url keeps the long 7-day TTL', function () {
